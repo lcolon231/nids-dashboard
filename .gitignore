@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# NIDS data + model artifacts (regenerated via CLI — see backend/SPEC.md)
+backend/data/raw/
+backend/data/processed/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.env*.local
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

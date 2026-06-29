@@ -1,0 +1,13 @@
+# NIDS Dashboard — backend dependencies
+# Pinned for reproducibility. Targets Python 3.11.
+# These versions are mutually compatible (numpy<2 keeps scikit-learn/mlxtend happy).
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+scikit-learn==1.5.2
+pandas==2.2.3
+numpy==1.26.4
+joblib==1.4.2
+mlxtend==0.23.3
+pytest==8.3.4
+httpx==0.28.1
