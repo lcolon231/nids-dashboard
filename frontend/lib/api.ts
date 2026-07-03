@@ -22,7 +22,7 @@ export interface MetricSet {
 export interface MetricsResponse {
   phase: Phase;
   split: string;
-  metrics: { nb: MetricSet; dt: MetricSet };
+  metrics: { nb: MetricSet; dt: MetricSet; rf: MetricSet; xgb: MetricSet };
 }
 
 export interface DatasetSummary {

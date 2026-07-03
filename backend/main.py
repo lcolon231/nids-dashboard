@@ -73,7 +73,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ModelName = Literal["nb", "dt"]
+ModelName = Literal["nb", "dt", "rf", "xgb"]
 PhaseName = Literal["binary", "multiclass"]
 
 

@@ -6,7 +6,7 @@ Tier 2: Next.js 15 frontend (separate `frontend/`).
 
 ## Stack
 - FastAPI + uvicorn (API, port 8000)
-- scikit-learn (GaussianNB, DecisionTree, KMeans)
+- scikit-learn (GaussianNB, DecisionTree, RandomForest, KMeans) + XGBoost
 - mlxtend (Apriori association rules)
 - pandas / numpy / joblib
 - pytest + httpx (tests)
@@ -52,7 +52,7 @@ uvicorn main:app --reload --port 8000
 | Method | Path              | Params                          | Notes |
 |--------|-------------------|---------------------------------|-------|
 | GET    | /health           | —                               | `{status, models_loaded}` |
-| POST   | /predict          | model=nb\|dt, phase=binary\|multiclass | 503 if model unloaded |
+| POST   | /predict          | model=nb\|dt\|rf\|xgb, phase=binary\|multiclass | 503 if model unloaded |
 | GET    | /metrics          | phase=binary\|multiclass        | NB + DT metrics on KDDTest+ |
 | GET    | /dataset/summary  | split=train\|test               | rows, cols, class distribution |
 | GET    | /rules            | —                               | top 20 by lift; 503 if rules.csv missing |

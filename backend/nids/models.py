@@ -18,9 +18,11 @@ from pathlib import Path
 import joblib
 import numpy as np
 from sklearn.cluster import KMeans
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import silhouette_score
 from sklearn.naive_bayes import GaussianNB
 from sklearn.tree import DecisionTreeClassifier
+from xgboost import XGBClassifier
 
 from nids import data
 from nids.evaluation import metrics
@@ -38,7 +40,7 @@ KMEANS_SAMPLE = 10_000
 KMEANS_PATH = PROCESSED_DIR / "kmeans.joblib"
 KMEANS_SWEEP_PATH = PROCESSED_DIR / "kmeans_sweep.json"
 
-MODEL_NAMES = ("nb", "dt")
+MODEL_NAMES = ("nb", "dt", "rf", "xgb")
 PHASES = ("binary", "multiclass")
 
 
@@ -54,7 +56,19 @@ def model_path(model: str, phase: str) -> Path:
 def _make(model: str):
     if model == "nb":
         return GaussianNB()
-    return DecisionTreeClassifier(random_state=RANDOM_STATE)
+    if model == "dt":
+        return DecisionTreeClassifier(random_state=RANDOM_STATE)
+    if model == "rf":
+        return RandomForestClassifier(
+            n_estimators=100, n_jobs=-1, random_state=RANDOM_STATE
+        )
+    return XGBClassifier(
+        n_estimators=200,
+        max_depth=8,
+        tree_method="hist",
+        n_jobs=-1,
+        random_state=RANDOM_STATE,
+    )
 
 
 def train_classifiers(X_train, train_labels, X_test, test_labels) -> dict:

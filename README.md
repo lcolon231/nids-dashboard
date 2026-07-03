@@ -15,7 +15,7 @@ A two-tier **Network Intrusion Detection System** dashboard: a Python/FastAPI ma
 
 ## Features
 
-- **Binary + multiclass classification** — Gaussian Naive Bayes and Decision Tree, trained on `KDDTrain+` (125,973 connections), evaluated on `KDDTest+` (22,544 connections, including attack types unseen in training)
+- **Binary + multiclass classification** — Gaussian Naive Bayes, Decision Tree, Random Forest, and XGBoost, trained on `KDDTrain+` (125,973 connections), evaluated on `KDDTest+` (22,544 connections, including attack types unseen in training)
 - **Unsupervised clustering** — KMeans sweep k=2..10 with inertia + silhouette scoring
 - **Association rule mining** — Apriori (mlxtend) surfaces human-readable attack signatures, e.g. `{flag=RSTR, service=private} → probe` (confidence 1.0, lift 10.8)
 - **Live scoring** — a sensor client streams connection records to `/score/live`; the dashboard's Live Feed panel shows attacks flagged in near-real time
@@ -23,14 +23,14 @@ A two-tier **Network Intrusion Detection System** dashboard: a Python/FastAPI ma
 
 ## Results (KDDTest+)
 
-| Model | Phase | Accuracy | F1 |
-|-------|-------|----------|-----|
-| Decision Tree | binary | **0.814** | 0.811 |
-| Decision Tree | multiclass | 0.763 | 0.574 (macro) |
-| Gaussian NB | binary | 0.566 | 0.390 |
-| Gaussian NB | multiclass | 0.473 | 0.330 (macro) |
+| Model | Binary acc / F1 | Multiclass acc / F1 (macro) |
+|-------|-----------------|------------------------------|
+| Decision Tree | **0.814** / 0.811 | 0.763 / 0.574 |
+| XGBoost | 0.790 / 0.780 | **0.776** / 0.561 |
+| Random Forest | 0.779 / 0.765 | 0.741 / 0.509 |
+| Gaussian NB | 0.566 / 0.390 | 0.473 / 0.330 |
 
-KDDTest+ deliberately contains novel attack types, so ~81% is in line with published single-model baselines — the NB/DT gap is part of what the dashboard illustrates.
+KDDTest+ deliberately contains novel attack types, so ~78–81% is in line with published single-model baselines. Notably the single Decision Tree edges out the ensembles on binary detection here — a known NSL-KDD quirk (ensembles fit the training attack distribution more tightly and generalize slightly worse to unseen attack types).
 
 ## Quickstart
 
@@ -76,8 +76,8 @@ The simulator samples real `KDDTest+` records. A real sensor (e.g., a Raspberry 
 | Method | Path | Params | Description |
 |--------|------|--------|-------------|
 | GET | `/health` | — | status + loaded models |
-| POST | `/predict` | `model=nb\|dt`, `phase=binary\|multiclass` | classify a batch of records |
-| GET | `/metrics` | `phase=binary\|multiclass` | NB + DT metrics on KDDTest+ (cached) |
+| POST | `/predict` | `model=nb\|dt\|rf\|xgb`, `phase=binary\|multiclass` | classify a batch of records |
+| GET | `/metrics` | `phase=binary\|multiclass` | all-model metrics on KDDTest+ (cached) |
 | GET | `/dataset/summary` | `split=train\|test` | rows, cols, class distribution |
 | GET | `/rules` | — | top 20 association rules by lift |
 | POST | `/score/live` | — | batch scoring for the live sensor (DT binary) |
@@ -107,7 +107,7 @@ frontend/
 
 ## Stack
 
-**Backend:** FastAPI · scikit-learn · mlxtend · pandas · joblib · pytest
+**Backend:** FastAPI · scikit-learn · XGBoost · mlxtend · pandas · joblib · pytest
 **Frontend:** Next.js 15 · React 19 · TypeScript · Tailwind CSS 4
 
 ## Dataset

@@ -8,6 +8,8 @@ const METRIC_KEYS = ["accuracy", "precision", "recall", "f1"] as const;
 const SERIES = [
   { key: "dt", name: "Decision Tree", color: "var(--series-1)" },
   { key: "nb", name: "Naive Bayes", color: "var(--series-2)" },
+  { key: "rf", name: "Random Forest", color: "var(--series-3)" },
+  { key: "xgb", name: "XGBoost", color: "var(--series-4)" },
 ] as const;
 
 export default function MetricsPanel() {
