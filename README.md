@@ -69,7 +69,19 @@ cd backend
 .venv\Scripts\python sensor_sim.py    # streams 5 records every 2s to /score/live
 ```
 
-The simulator samples real `KDDTest+` records. A real sensor (e.g., a Raspberry Pi capturing traffic) replaces it by POSTing the same 41-feature JSON to the same endpoint.
+The simulator samples real `KDDTest+` records.
+
+### 4. Real Pi sensor (optional)
+
+A real packet-capture sensor lives in [`sensor/`](sensor/README.md). It sniffs live traffic (scapy), assembles flows, derives the NSL-KDD features on the fly, and POSTs to the same `/score/live` endpoint:
+
+```bash
+cd sensor
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+sudo .venv/bin/python -m nids_sensor --iface eth0 --url http://<backend-host>:8000
+```
+
+See [sensor/README.md](sensor/README.md) for capture permissions, feature-derivation notes, and limitations.
 
 ## API
 
@@ -103,6 +115,9 @@ frontend/
   app/                 Next.js 15 (App Router)
   components/          MetricsPanel · DatasetPanel · RulesPanel · LiveFeedPanel
   lib/api.ts           typed API client
+sensor/
+  nids_sensor/         Raspberry Pi capture client (scapy -> flows -> features)
+  tests/               pytest suite — pure-Python, no capture required
 ```
 
 ## Stack
