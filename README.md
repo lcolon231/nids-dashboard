@@ -113,3 +113,7 @@ frontend/
 ## Dataset
 
 [NSL-KDD](https://github.com/defcom17/NSL_KDD) — a curated revision of the KDD Cup '99 intrusion detection benchmark. 41 features per connection record; labels cover normal traffic plus attacks in 4 families (DoS, Probe, R2L, U2R).
+
+## License
+
+[MIT](LICENSE)
