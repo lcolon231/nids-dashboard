@@ -2,6 +2,8 @@
 
 A two-tier **Network Intrusion Detection System** dashboard: a Python/FastAPI machine-learning backend trained on the NSL-KDD dataset, and a Next.js 15 frontend that visualizes model performance, dataset composition, discovered attack patterns, and a real-time scored traffic feed.
 
+![NIDS Dashboard — model performance, dataset summary, association rules, and live feed panels](docs/screenshot.png)
+
 ```
 ┌─────────────┐   POST /score/live   ┌──────────────────┐   GET /metrics /rules ...   ┌──────────────┐
 │   Sensor     │ ───────────────────► │  FastAPI backend  │ ◄────────────────────────── │   Next.js     │
