@@ -61,21 +61,40 @@ export default function LiveFeedPanel() {
             {data.events.slice(0, 10).map((e, i) => (
               <li
                 key={`${e.ts}-${i}`}
-                className="flex items-center gap-2 py-1"
+                className="py-1"
                 style={{ borderTop: "1px solid var(--gridline)" }}
               >
-                <span style={{ color: "var(--text-muted)" }}>
-                  {new Date(e.ts * 1000).toLocaleTimeString()}
-                </span>
-                <span className="flex-1 truncate" style={{ color: "var(--text-secondary)" }}>
-                  {e.protocol_type}/{e.service} · {e.flag}
-                </span>
-                <span
-                  className="font-semibold flex items-center gap-1"
-                  style={{ color: e.is_attack ? "var(--status-critical)" : "var(--status-good)" }}
-                >
-                  {e.is_attack ? "▲ attack" : "✓ normal"}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span style={{ color: "var(--text-muted)" }}>
+                    {new Date(e.ts * 1000).toLocaleTimeString()}
+                  </span>
+                  <span className="flex-1 truncate" style={{ color: "var(--text-secondary)" }}>
+                    {e.protocol_type}/{e.service} · {e.flag}
+                  </span>
+                  <span
+                    className="font-semibold flex items-center gap-1"
+                    style={{ color: e.is_attack ? "var(--status-critical)" : "var(--status-good)" }}
+                  >
+                    {e.is_attack ? "▲ attack" : "✓ normal"}
+                  </span>
+                </div>
+                {e.is_attack && e.has_file_activity && (
+                  <div
+                    className="mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
+                    style={{
+                      border: "1px solid var(--border)",
+                      color: "var(--text-secondary)",
+                    }}
+                    title="Host impact — file-activity counts reported by the sensor for this connection"
+                  >
+                    📁 {e.num_file_creations ?? 0} created · {e.num_access_files ?? 0} accessed
+                    {(e.root_shell ?? 0) >= 1 && (
+                      <span className="font-semibold" style={{ color: "var(--status-critical)" }}>
+                        · root
+                      </span>
+                    )}
+                  </div>
+                )}
               </li>
             ))}
           </ul>

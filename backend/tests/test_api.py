@@ -29,8 +29,12 @@ class FakeModel:
 
 
 @pytest.fixture
-def client(monkeypatch):
-    """TestClient with synthetic artifacts injected at startup."""
+def client(monkeypatch, tmp_path):
+    """TestClient with synthetic artifacts injected at startup.
+
+    LIVE_FEED is cleared and the attack log redirected to tmp_path so
+    tests never touch data/processed/ and stay independent.
+    """
 
     def fake_load():
         main.STATE["transformer"] = FakeTransformer()
@@ -42,6 +46,8 @@ def client(monkeypatch):
         main.STATE["metrics_cache"] = {}
 
     monkeypatch.setattr(main, "_load_artifacts", fake_load)
+    monkeypatch.setattr(main, "ATTACK_LOG_PATH", tmp_path / "attack_log.jsonl")
+    main.LIVE_FEED.clear()
     with TestClient(main.app) as c:
         yield c
 
@@ -62,6 +68,35 @@ def empty_client(monkeypatch):
 
 def records(n: int = 3) -> list[dict]:
     return make_dataset(n).drop(columns=["label"]).to_dict(orient="records")
+
+
+def record_with_files(created: float = 3, accessed: float = 2, root: float = 1) -> dict:
+    """One record with explicit file-activity / host-impact values."""
+    rec = records(1)[0]
+    rec.update(
+        num_file_creations=created,
+        num_access_files=accessed,
+        root_shell=root,
+        num_shells=1,
+        num_root=2,
+        num_compromised=1,
+        hot=4,
+    )
+    return rec
+
+
+def record_no_files() -> dict:
+    rec = records(1)[0]
+    rec.update(
+        num_file_creations=0,
+        num_access_files=0,
+        root_shell=0,
+        num_shells=0,
+        num_root=0,
+        num_compromised=0,
+        hot=0,
+    )
+    return rec
 
 
 class TestHealth:
@@ -120,6 +155,61 @@ class TestScoreLive:
     def test_503_when_unloaded(self, empty_client):
         r = empty_client.post("/score/live", json={"records": records(1)})
         assert r.status_code == 503
+
+    def test_events_include_file_activity_fields(self, client):
+        client.post(
+            "/score/live",
+            json={"records": [record_with_files(), record_no_files()]},
+        )
+        events = client.get("/live/recent").json()["events"]  # newest first
+        assert len(events) == 2
+        no_files, with_files = events[0], events[1]
+        for field in main.FILE_ACTIVITY_FEATURES:
+            assert field in with_files and field in no_files
+        assert with_files["has_file_activity"] is True
+        assert with_files["num_file_creations"] == 3
+        assert with_files["num_access_files"] == 2
+        assert with_files["root_shell"] == 1
+        assert no_files["has_file_activity"] is False
+
+
+class TestAttackLog:
+    def test_empty_when_no_log_file(self, client):
+        body = client.get("/attacks/log").json()
+        assert body == {"count": 0, "attacks": []}
+
+    def test_attacks_persisted_and_newest_first(self, client):
+        client.post("/score/live", json={"records": [record_no_files()]})
+        client.post("/score/live", json={"records": [record_with_files()]})
+
+        body = client.get("/attacks/log").json()
+        assert body["count"] == 2
+        newest, oldest = body["attacks"]
+        assert newest["has_file_activity"] is True  # posted last, returned first
+        assert oldest["has_file_activity"] is False
+        assert newest["is_attack"] is True
+        assert "logged_at" in newest  # ISO-8601 UTC timestamp
+        assert main.ATTACK_LOG_PATH.exists()  # survives restarts (on disk)
+
+    def test_files_only_filter(self, client):
+        client.post(
+            "/score/live",
+            json={"records": [record_with_files(), record_no_files()]},
+        )
+        body = client.get("/attacks/log?files_only=true").json()
+        assert body["count"] == 1
+        assert all(a["has_file_activity"] for a in body["attacks"])
+
+    def test_limit(self, client):
+        client.post("/score/live", json={"records": [record_no_files()] * 5})
+        body = client.get("/attacks/log?limit=2").json()
+        assert body["count"] == 2
+
+    def test_normal_traffic_not_logged(self, client, monkeypatch):
+        # make dt predict 0 -> nothing should be appended
+        main.STATE["models"][("dt", "binary")] = FakeModel(0)
+        client.post("/score/live", json={"records": [record_with_files()]})
+        assert client.get("/attacks/log").json()["count"] == 0
 
 
 class TestRules:

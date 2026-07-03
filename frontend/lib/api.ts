@@ -46,6 +46,15 @@ export interface LiveEvent {
   protocol_type: string | null;
   service: string | null;
   flag: string | null;
+  // host-impact content features (NSL-KDD counts, not filenames)
+  num_file_creations: number | null;
+  num_access_files: number | null;
+  num_shells: number | null;
+  num_root: number | null;
+  root_shell: number | null;
+  num_compromised: number | null;
+  hot: number | null;
+  has_file_activity: boolean;
   prediction: number;
   label: string;
   is_attack: boolean;

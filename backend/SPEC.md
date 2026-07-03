@@ -58,6 +58,7 @@ uvicorn main:app --reload --port 8000
 | GET    | /rules            | —                               | top 20 by lift; 503 if rules.csv missing |
 | POST   | /score/live       | —                               | batch scoring for Pi sensor (Phase 9) |
 | GET    | /live/recent      | limit (default 50)              | rolling buffer of live-scored events for the Live Feed panel |
+| GET    | /attacks/log      | limit (≤1000), files_only       | persisted JSONL attack log with file-activity fields, newest-first |
 
 CORS enabled for all origins (Next.js dev server).
 

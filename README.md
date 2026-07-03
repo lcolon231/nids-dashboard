@@ -19,6 +19,7 @@ A two-tier **Network Intrusion Detection System** dashboard: a Python/FastAPI ma
 - **Unsupervised clustering** — KMeans sweep k=2..10 with inertia + silhouette scoring
 - **Association rule mining** — Apriori (mlxtend) surfaces human-readable attack signatures, e.g. `{flag=RSTR, service=private} → probe` (confidence 1.0, lift 10.8)
 - **Live scoring** — a sensor client streams connection records to `/score/live`; the dashboard's Live Feed panel shows attacks flagged in near-real time
+- **Attack logging with host-impact visibility** — every flagged attack is appended to a persistent JSONL log (`backend/data/processed/attack_log.jsonl`) enriched with NSL-KDD's file-activity features (`num_file_creations`, `num_access_files`, `root_shell`, ...); the Live Feed shows a 📁 host-impact badge on attacks that touched files. **Limitation:** NSL-KDD provides file-activity *counts*, not filenames — actual affected-file paths would require a host-based log source (auditd/Wazuh) or Zeek `files.log`, which is out of scope here.
 - **Fully reproducible** — data and model artifacts are gitignored and regenerate from two CLI commands
 
 ## Results (KDDTest+)
@@ -82,6 +83,7 @@ The simulator samples real `KDDTest+` records. A real sensor (e.g., a Raspberry 
 | GET | `/rules` | — | top 20 association rules by lift |
 | POST | `/score/live` | — | batch scoring for the live sensor (DT binary) |
 | GET | `/live/recent` | `limit` | rolling buffer of live-scored events |
+| GET | `/attacks/log` | `limit` (≤1000), `files_only` | persisted attack log (JSONL), newest-first |
 
 Interactive docs: **http://localhost:8000/docs**
 
