@@ -13,6 +13,8 @@ Run: uvicorn main:app --reload --port 8000
 """
 from __future__ import annotations
 
+import time
+from collections import deque
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 
@@ -37,6 +39,10 @@ BINARY_LABELS = ["normal", "attack"]
 
 # --- app state: artifacts loaded at startup ----------------------------------
 STATE: dict[str, Any] = {"transformer": None, "models": {}, "metrics_cache": {}}
+
+# Rolling buffer of recently scored live events for the dashboard Live Feed.
+LIVE_FEED_MAX = 200
+LIVE_FEED: deque[dict] = deque(maxlen=LIVE_FEED_MAX)
 
 
 def _load_artifacts() -> None:
@@ -185,8 +191,30 @@ def rules() -> dict:
 def score_live(body: PredictRequest) -> dict:
     """Batch scoring for the Pi sensor (Phase 9): DT binary, flag attacks."""
     results = _predict(body.records, "dt", "binary")
+    now = time.time()
+    for rec, res in zip(body.records, results):
+        LIVE_FEED.append(
+            {
+                "ts": now,
+                "protocol_type": rec.get("protocol_type"),
+                "service": rec.get("service"),
+                "flag": rec.get("flag"),
+                **res,
+            }
+        )
     return {
         "count": len(results),
         "attacks": sum(r["is_attack"] for r in results),
         "results": results,
+    }
+
+
+@app.get("/live/recent")
+def live_recent(limit: int = Query(50, ge=1, le=LIVE_FEED_MAX)) -> dict:
+    """Most recent live-scored records, newest first (dashboard Live Feed)."""
+    events = list(LIVE_FEED)[-limit:][::-1]
+    return {
+        "count": len(events),
+        "attacks": sum(e["is_attack"] for e in events),
+        "events": events,
     }

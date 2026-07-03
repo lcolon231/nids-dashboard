@@ -26,6 +26,7 @@ backend/
     raw/               KDDTrain+.txt, KDDTest+.txt   (gitignored)
     processed/         *.joblib, kmeans_sweep.json, rules.csv (gitignored)
   main.py              FastAPI app
+  sensor_sim.py        simulated Pi sensor -> POST /score/live
   requirements.txt
 ```
 
@@ -56,16 +57,24 @@ uvicorn main:app --reload --port 8000
 | GET    | /dataset/summary  | split=train\|test               | rows, cols, class distribution |
 | GET    | /rules            | —                               | top 20 by lift; 503 if rules.csv missing |
 | POST   | /score/live       | —                               | batch scoring for Pi sensor (Phase 9) |
+| GET    | /live/recent      | limit (default 50)              | rolling buffer of live-scored events for the Live Feed panel |
 
 CORS enabled for all origins (Next.js dev server).
 
 ## Build phases
 1. Backend scaffold ✅
-2. Dataset download + verify
-3. Preprocessing (FeatureTransformer)
-4. Models (NB, DT, KMeans sweep)
-5. Association rules (Apriori)
-6. FastAPI endpoints
-7. Tests (synthetic fixtures)
-8. Next.js frontend (4 panels)
-9. Live sensor integration (/score/live + Live Feed panel)
+2. Dataset download + verify ✅
+3. Preprocessing (FeatureTransformer) ✅
+4. Models (NB, DT, KMeans sweep) ✅
+5. Association rules (Apriori) ✅
+6. FastAPI endpoints ✅
+7. Tests (synthetic fixtures) ✅
+8. Next.js frontend (4 panels) ✅
+9. Live sensor integration (/score/live + sensor_sim.py + Live Feed panel) ✅
+
+## Running the full stack
+```
+cd backend  && uvicorn main:app --reload --port 8000
+cd backend  && python sensor_sim.py            # optional: feeds the Live Feed panel
+cd frontend && npm run dev                     # dashboard on http://localhost:3000
+```
