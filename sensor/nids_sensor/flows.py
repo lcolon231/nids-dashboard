@@ -200,15 +200,36 @@ class Flow:
 class FlowTracker:
     """Assembles packets into flows; finalized flows accumulate until drain()."""
 
+    # After a TCP flow closes (RST / both FINs) the teardown produces a few
+    # trailing packets (the final ACK, delayed/duplicate ACKs, retransmitted
+    # FINs). Without this grace window each of those would spawn a *new* flow
+    # on the just-freed 4-tuple that later idle-times-out into a bogus second
+    # "connection" — so a single HTTP request scored as two records. A genuine
+    # new connection reusing the tuple always begins with a fresh SYN, which is
+    # never suppressed.
+    CLOSE_GRACE = 2.0
+
     def __init__(
         self, tcp_idle: float = 30.0, udp_idle: float = 10.0, icmp_idle: float = 5.0
     ) -> None:
         self._idle = {"tcp": tcp_idle, "udp": udp_idle, "icmp": icmp_idle}
         self._flows: dict[FlowKey, Flow] = {}
         self._completed: list[ConnRecord] = []
+        # canonical (undirected) tcp tuple -> wall-clock close time
+        self._recent_closed: dict[tuple, float] = {}
 
     def __len__(self) -> int:
         return len(self._flows)
+
+    @staticmethod
+    def _canon(key: FlowKey) -> tuple:
+        a, b, proto = (key[0], key[1]), (key[2], key[3]), key[4]
+        lo, hi = (a, b) if a <= b else (b, a)
+        return (lo, hi, proto)
+
+    def _recently_closed(self, key: FlowKey, now: float) -> bool:
+        closed_at = self._recent_closed.get(self._canon(key))
+        return closed_at is not None and now - closed_at <= self.CLOSE_GRACE
 
     def on_packet(self, meta: PacketMeta) -> None:
         key: FlowKey = (meta.src_ip, meta.src_port, meta.dst_ip, meta.dst_port, meta.proto)
@@ -218,6 +239,15 @@ class FlowTracker:
         elif rkey in self._flows:
             flow, key, from_orig = self._flows[rkey], rkey, False
         else:
+            # A fresh SYN (no ACK) opens a connection; anything else landing on
+            # a just-closed tuple is teardown residue — absorb it silently.
+            is_syn = (
+                meta.proto == "tcp"
+                and "S" in meta.tcp_flags
+                and "A" not in meta.tcp_flags
+            )
+            if not is_syn and self._recently_closed(key, meta.ts):
+                return
             self._flows[key] = Flow(meta)
             return
         flow.update(meta, from_orig)
@@ -232,6 +262,10 @@ class FlowTracker:
         ]
         for key in stale:
             self._finalize(key)
+        # Expire the close-grace bookkeeping so it can't grow without bound.
+        self._recent_closed = {
+            k: t for k, t in self._recent_closed.items() if now - t <= self.CLOSE_GRACE
+        }
 
     def flush_all(self) -> None:
         """Finalize every open flow (shutdown)."""
@@ -243,4 +277,7 @@ class FlowTracker:
         return done
 
     def _finalize(self, key: FlowKey) -> None:
-        self._completed.append(self._flows.pop(key).to_record())
+        flow = self._flows.pop(key)
+        if flow.proto == "tcp":
+            self._recent_closed[self._canon(key)] = flow.last_ts
+        self._completed.append(flow.to_record())
