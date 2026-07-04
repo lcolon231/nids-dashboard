@@ -27,6 +27,11 @@ def main() -> int:
     ap.add_argument("--schema", choices=("nsl", "cic"), default="nsl",
                     help="feature schema / backend model family: nsl (41 KDD "
                          "features) or cic (32 modern flow features)")
+    ap.add_argument("--verbose", "--stats", action="store_true", dest="verbose",
+                    help="print a periodic [stat] heartbeat with pipeline "
+                         "counters (packets seen, dropped non-IP/own, flows "
+                         "open/finalized, records buffered/sent) — use this to "
+                         "diagnose why no [sent] lines appear")
     args = ap.parse_args()
     return run(
         url=args.url,
@@ -36,6 +41,7 @@ def main() -> int:
         flush_interval=args.flush_interval,
         idle_timeout=args.idle_timeout,
         schema=args.schema,
+        verbose=args.verbose,
     )
 
 

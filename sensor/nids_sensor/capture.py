@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import threading
 import time
+import traceback
 from urllib.parse import urlparse
 
 from nids_sensor.features import FeatureBuilder
@@ -76,6 +77,8 @@ class SensorEngine:
         flush_interval: float = 2.0,
         idle_timeout: float = 30.0,
         schema: str = "nsl",  # "nsl" (41 KDD features) | "cic" (32 flow features)
+        verbose: bool = False,
+        stats_interval: float = 5.0,
     ) -> None:
         self.schema = schema
         self.tracker = FlowTracker(tcp_idle=idle_timeout)
@@ -85,6 +88,16 @@ class SensorEngine:
         self._lock = threading.Lock()
         self._last_flush = time.time()
         self._sent = self._attacks = 0
+        # Diagnostic counters (surfaced by --verbose via the heartbeat).
+        self._pkts = 0          # packets handed to on_packet
+        self._non_ip = 0        # dropped: not IP / unsupported L4
+        self._own = 0           # dropped: sensor's own API traffic
+        self._finalized = 0     # flows finalized (records emitted downstream)
+        self._errors = 0        # exceptions swallowed in the packet path
+        self._error_logged = False
+        self.verbose = verbose
+        self.stats_interval = stats_interval
+        self._last_stats = time.time()
         # Ignore the sensor's own traffic to the API (avoid a feedback loop).
         api = urlparse(url)
         self._api_host = api.hostname
@@ -98,12 +111,34 @@ class SensorEngine:
         )
 
     def on_packet(self, pkt) -> None:
-        meta = packet_to_meta(pkt)
-        if meta is None or self._is_own_traffic(meta):
+        # scapy's sniff() swallows exceptions raised in prn, so a single bad
+        # packet would silently stop nothing being reported. Guard the whole
+        # path and count/log failures instead of losing them.
+        self._pkts += 1
+        try:
+            meta = packet_to_meta(pkt)
+        except Exception as e:  # noqa: BLE001 — diagnostic guard, never crash capture
+            self._record_error("decode", e)
             return
-        with self._lock:
-            self.tracker.on_packet(meta)
-            self._emit_completed()
+        if meta is None:
+            self._non_ip += 1
+            return
+        if self._is_own_traffic(meta):
+            self._own += 1
+            return
+        try:
+            with self._lock:
+                self.tracker.on_packet(meta)
+                self._emit_completed()
+        except Exception as e:  # noqa: BLE001 — diagnostic guard
+            self._record_error("assemble", e)
+
+    def _record_error(self, where: str, exc: Exception) -> None:
+        self._errors += 1
+        if not self._error_logged:
+            self._error_logged = True
+            print(f"[warn] packet {where} failed: {exc!r} (further errors counted silently)")
+            traceback.print_exc()
 
     def tick(self) -> None:
         """Periodic: time out idle flows, flush stale batches."""
@@ -113,6 +148,31 @@ class SensorEngine:
             if time.time() - self._last_flush >= self.flush_interval:
                 self._report(self.sender.flush())
                 self._last_flush = time.time()
+        if self.verbose and time.time() - self._last_stats >= self.stats_interval:
+            self._last_stats = time.time()
+            print(self._heartbeat())
+
+    def stats(self) -> dict:
+        """Snapshot of the diagnostic counters (used by tests and heartbeat)."""
+        return {
+            "packets": self._pkts,
+            "non_ip": self._non_ip,
+            "own": self._own,
+            "errors": self._errors,
+            "open": len(self.tracker),
+            "finalized": self._finalized,
+            "buffered": self.sender.pending,
+            "sent": self._sent,
+            "flagged": self._attacks,
+        }
+
+    def _heartbeat(self) -> str:
+        s = self.stats()
+        return (
+            f"[stat] pkts={s['packets']} non_ip={s['non_ip']} own={s['own']} "
+            f"err={s['errors']} flows_open={s['open']} finalized={s['finalized']} "
+            f"buffered={s['buffered']} sent={s['sent']} flagged={s['flagged']}"
+        )
 
     def shutdown(self) -> None:
         with self._lock:
@@ -124,6 +184,7 @@ class SensorEngine:
 
     def _emit_completed(self) -> None:
         for conn in self.tracker.drain():
+            self._finalized += 1
             if self.schema == "cic":
                 # protocol/service/flag ride along for the dashboard Live
                 # Feed only — the CIC models never see them.
@@ -156,15 +217,30 @@ def run(
     flush_interval: float = 2.0,
     idle_timeout: float = 30.0,
     schema: str = "nsl",
+    verbose: bool = False,
 ) -> int:
-    from scapy.sendrecv import sniff
+    # Import from scapy.all (not scapy.sendrecv): scapy.all runs the full
+    # layer/conf initialization — protocol dissectors and the L2 capture
+    # socket setup — that a bare `from scapy.sendrecv import sniff` may skip.
+    # On some interfaces (notably Raspberry Pi wlan0) the under-initialized
+    # path can hand prn() undissected frames (no IP layer -> every packet
+    # dropped as non-IP) or fail to open a usable capture socket at all.
+    from scapy.all import sniff
 
-    engine = SensorEngine(url, batch_size, flush_interval, idle_timeout, schema)
+    engine = SensorEngine(
+        url, batch_size, flush_interval, idle_timeout, schema, verbose=verbose
+    )
     stop = threading.Event()
 
     def sweeper() -> None:
+        # A dead sweeper means flushes stop forever, so no exception may kill
+        # this loop — log it and keep ticking.
         while not stop.wait(SWEEP_INTERVAL):
-            engine.tick()
+            try:
+                engine.tick()
+            except Exception as e:  # noqa: BLE001 — keep the flush loop alive
+                print(f"[warn] sweeper tick failed: {e!r}")
+                traceback.print_exc()
 
     t = threading.Thread(target=sweeper, daemon=True)
     t.start()
@@ -174,6 +250,8 @@ def run(
     # Python, so the filter is redundant; --bpf re-enables it if wanted.
     filter_desc = bpf or "none (IP filtered in software)"
     print(f"[ok  ] capturing on {iface or 'default iface'} (filter: {filter_desc}) -> {url}/score/live")
+    if verbose:
+        print(f"[ok  ] verbose heartbeat every {engine.stats_interval:.0f}s ([stat] lines)")
     try:
         sniff(iface=iface, filter=bpf or None, store=False, prn=engine.on_packet)
     except KeyboardInterrupt:
