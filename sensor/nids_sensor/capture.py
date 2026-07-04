@@ -31,6 +31,7 @@ def packet_to_meta(pkt) -> PacketMeta | None:
         dst_ip=ip.dst,
         is_fragment=is_fragment,
     )
+    common["ip_len"] = int(ip.len) if ip.len is not None else len(ip)
     if TCP in pkt:
         tcp = pkt[TCP]
         return PacketMeta(
@@ -39,6 +40,7 @@ def packet_to_meta(pkt) -> PacketMeta | None:
             proto="tcp",
             payload_len=len(tcp.payload),
             tcp_flags=frozenset(str(tcp.flags)),
+            tcp_window=int(tcp.window),
             **common,
         )
     if UDP in pkt:
@@ -73,10 +75,12 @@ class SensorEngine:
         batch_size: int = 10,
         flush_interval: float = 2.0,
         idle_timeout: float = 30.0,
+        schema: str = "nsl",  # "nsl" (41 KDD features) | "cic" (32 flow features)
     ) -> None:
+        self.schema = schema
         self.tracker = FlowTracker(tcp_idle=idle_timeout)
         self.builder = FeatureBuilder()
-        self.sender = LiveScoreSender(url, batch_size=batch_size)
+        self.sender = LiveScoreSender(url, batch_size=batch_size, dataset=schema)
         self.flush_interval = flush_interval
         self._lock = threading.Lock()
         self._last_flush = time.time()
@@ -120,7 +124,18 @@ class SensorEngine:
 
     def _emit_completed(self) -> None:
         for conn in self.tracker.drain():
-            self._report(self.sender.add(self.builder.build(conn)))
+            if self.schema == "cic":
+                # protocol/service/flag ride along for the dashboard Live
+                # Feed only — the CIC models never see them.
+                record = {
+                    **conn.cic,
+                    "protocol_type": conn.proto,
+                    "service": conn.service,
+                    "flag": conn.flag,
+                }
+            else:
+                record = self.builder.build(conn)
+            self._report(self.sender.add(record))
 
     def _report(self, body: dict | None) -> None:
         if body is None:
@@ -140,10 +155,11 @@ def run(
     batch_size: int = 10,
     flush_interval: float = 2.0,
     idle_timeout: float = 30.0,
+    schema: str = "nsl",
 ) -> int:
     from scapy.sendrecv import sniff
 
-    engine = SensorEngine(url, batch_size, flush_interval, idle_timeout)
+    engine = SensorEngine(url, batch_size, flush_interval, idle_timeout, schema)
     stop = threading.Event()
 
     def sweeper() -> None:

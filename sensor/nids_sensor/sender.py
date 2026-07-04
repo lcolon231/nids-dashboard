@@ -16,9 +16,11 @@ class LiveScoreSender:
         base_url: str,
         batch_size: int = 10,
         client: httpx.Client | None = None,
+        dataset: str = "nsl",  # which backend model family scores the batch
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.batch_size = batch_size
+        self.dataset = dataset
         self._client = client or httpx.Client(timeout=10.0)
         self._buffer: list[dict] = []
 
@@ -40,7 +42,9 @@ class LiveScoreSender:
             return None
         try:
             r = self._client.post(
-                f"{self.base_url}/score/live", json={"records": self._buffer}
+                f"{self.base_url}/score/live",
+                params={"dataset": self.dataset},
+                json={"records": self._buffer},
             )
             r.raise_for_status()
         except httpx.HTTPError as e:

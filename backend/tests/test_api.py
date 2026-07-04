@@ -5,12 +5,14 @@ these tests pass with or without real artifacts in data/processed/.
 """
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
 import main
-from tests.conftest import make_dataset
+from tests.conftest import make_cic_dataset, make_dataset
 
 
 class FakeTransformer:
@@ -33,9 +35,10 @@ def client(monkeypatch):
     """TestClient with synthetic artifacts injected at startup."""
 
     def fake_load():
-        main.STATE["transformer"] = FakeTransformer()
+        main.STATE["transformers"] = {"nsl": FakeTransformer(), "cic": FakeTransformer()}
         main.STATE["models"] = {
-            (m, p): FakeModel(1 if m == "dt" else 0)
+            (d, m, p): FakeModel(1 if m == "dt" else 0)
+            for d in ("nsl", "cic")
             for m in ("nb", "dt")
             for p in ("binary", "multiclass")
         }
@@ -51,7 +54,7 @@ def empty_client(monkeypatch):
     """TestClient with NO artifacts loaded (503 paths)."""
 
     def fake_load():
-        main.STATE["transformer"] = None
+        main.STATE["transformers"] = {}
         main.STATE["models"] = {}
         main.STATE["metrics_cache"] = {}
 
@@ -62,6 +65,10 @@ def empty_client(monkeypatch):
 
 def records(n: int = 3) -> list[dict]:
     return make_dataset(n).drop(columns=["label"]).to_dict(orient="records")
+
+
+def cic_records(n: int = 3) -> list[dict]:
+    return make_cic_dataset(n).drop(columns=["label"]).to_dict(orient="records")
 
 
 class TestHealth:
@@ -143,3 +150,53 @@ class TestRules:
 class TestMetricsEndpoint:
     def test_503_when_unloaded(self, empty_client):
         assert empty_client.get("/metrics").status_code == 503
+
+
+class TestCicDataset:
+    def test_predict_multiclass_uses_cic_categories(self, client):
+        r = client.post(
+            "/predict?model=dt&phase=multiclass&dataset=cic",
+            json={"records": cic_records(2)},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["dataset"] == "cic"
+        assert all(x["label"] == "dos" for x in body["results"])  # fake dt -> class 1
+
+    def test_predict_missing_cic_feature_422(self, client):
+        bad = cic_records(1)
+        bad[0].pop("flow_duration")
+        r = client.post("/predict?dataset=cic", json={"records": bad})
+        assert r.status_code == 422
+        assert "flow_duration" in r.json()["detail"]
+
+    def test_nsl_features_rejected_for_cic(self, client):
+        r = client.post("/predict?dataset=cic", json={"records": records(1)})
+        assert r.status_code == 422
+
+    def test_score_live_cic_keeps_display_metadata(self, client):
+        recs = cic_records(2)
+        for rec in recs:
+            rec.update(protocol_type="tcp", service="http", flag="SF")
+        r = client.post("/score/live?dataset=cic", json={"records": recs})
+        assert r.status_code == 200
+        assert r.json()["attacks"] == 2
+        events = client.get("/live/recent?limit=2").json()["events"]
+        assert all(e["dataset"] == "cic" and e["service"] == "http" for e in events)
+
+    def test_metrics_served_from_json(self, client, monkeypatch, tmp_path):
+        path = tmp_path / "cic_metrics.json"
+        fake = {"binary": {"dt": {"accuracy": 0.99, "precision": 1.0, "recall": 0.98, "f1": 0.99}}}
+        path.write_text(json.dumps(fake))
+        monkeypatch.setattr(main, "CIC_METRICS_PATH", path)
+        body = client.get("/metrics?dataset=cic").json()
+        assert body["dataset"] == "cic"
+        assert body["metrics"]["dt"]["accuracy"] == 0.99
+
+    def test_metrics_503_when_json_missing(self, client, monkeypatch, tmp_path):
+        monkeypatch.setattr(main, "CIC_METRICS_PATH", tmp_path / "nope.json")
+        assert client.get("/metrics?dataset=cic").status_code == 503
+
+    def test_unloaded_cic_model_503(self, empty_client):
+        r = empty_client.post("/predict?dataset=cic", json={"records": cic_records(1)})
+        assert r.status_code == 503

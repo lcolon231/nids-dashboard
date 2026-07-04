@@ -20,6 +20,9 @@ def main() -> int:
                     help="max seconds before a partial batch is sent")
     ap.add_argument("--idle-timeout", type=float, default=30.0,
                     help="seconds of silence before an open TCP flow is finalized")
+    ap.add_argument("--schema", choices=("nsl", "cic"), default="nsl",
+                    help="feature schema / backend model family: nsl (41 KDD "
+                         "features) or cic (32 modern flow features)")
     args = ap.parse_args()
     return run(
         url=args.url,
@@ -28,6 +31,7 @@ def main() -> int:
         batch_size=args.batch,
         flush_interval=args.flush_interval,
         idle_timeout=args.idle_timeout,
+        schema=args.schema,
     )
 
 

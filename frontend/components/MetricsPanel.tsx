@@ -1,8 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { fetchMetrics, MetricsResponse, Phase } from "@/lib/api";
+import { Dataset, fetchMetrics, MetricsResponse, Phase } from "@/lib/api";
 import { LoadState, Panel, Toggle } from "./Panel";
+
+const DATASET_SUBTITLE: Record<Dataset, string> = {
+  nsl: "Evaluated on KDDTest+",
+  cic: "Evaluated on CIC-IDS2017 held-out split",
+};
 
 const METRIC_KEYS = ["accuracy", "precision", "recall", "f1"] as const;
 const SERIES = [
@@ -14,20 +19,26 @@ const SERIES = [
 
 export default function MetricsPanel() {
   const [phase, setPhase] = useState<Phase>("binary");
+  const [dataset, setDataset] = useState<Dataset>("nsl");
   const [data, setData] = useState<MetricsResponse | null>(null);
   const [error, setError] = useState<string>();
 
   useEffect(() => {
     setData(null);
     setError(undefined);
-    fetchMetrics(phase).then(setData).catch((e) => setError(String(e.message ?? e)));
-  }, [phase]);
+    fetchMetrics(phase, dataset).then(setData).catch((e) => setError(String(e.message ?? e)));
+  }, [phase, dataset]);
 
   return (
     <Panel
       title="Model performance"
-      subtitle="Evaluated on KDDTest+"
-      actions={<Toggle value={phase} options={["binary", "multiclass"] as const} onChange={setPhase} />}
+      subtitle={DATASET_SUBTITLE[dataset]}
+      actions={
+        <div className="flex gap-2">
+          <Toggle value={dataset} options={["nsl", "cic"] as const} onChange={setDataset} />
+          <Toggle value={phase} options={["binary", "multiclass"] as const} onChange={setPhase} />
+        </div>
+      }
     >
       {!data ? (
         <LoadState error={error} />

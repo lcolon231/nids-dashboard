@@ -49,6 +49,29 @@ def make_dataset(n: int = 200, seed: int = 0) -> pd.DataFrame:
     return df[FEATURE_COLUMNS + ["label"]]
 
 
+def make_cic_dataset(n: int = 200, seed: int = 0) -> pd.DataFrame:
+    """Synthetic CIC-IDS2017-shaped frame: 32 flow features + raw label.
+
+    Attacks skew toward high packet rates and SYN counts so models have
+    signal, mirroring make_dataset for the NSL-KDD schema.
+    """
+    from nids.flowschema import FLOW_FEATURES
+
+    rng = np.random.RandomState(seed)
+    is_attack = rng.rand(n) < 0.5
+
+    df = pd.DataFrame(index=range(n))
+    for col in FLOW_FEATURES:
+        base = rng.rand(n)
+        if col in ("flow_pkts_per_s", "syn_flag_cnt", "tot_fwd_pkts"):
+            base = base + is_attack * 2.0
+        df[col] = base
+    df["label"] = np.where(
+        is_attack, rng.choice(["DoS Hulk", "PortScan", "SSH-Patator"], n), "BENIGN"
+    )
+    return df[FLOW_FEATURES + ["label"]]
+
+
 @pytest.fixture
 def synth_df() -> pd.DataFrame:
     return make_dataset()

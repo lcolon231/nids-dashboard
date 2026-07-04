@@ -39,6 +39,14 @@ Options:
 | `--batch` | 10 | records per POST |
 | `--flush-interval` | 2.0 | max seconds before a partial batch is sent |
 | `--idle-timeout` | 30.0 | idle seconds before an open TCP flow finalizes |
+| `--schema` | `nsl` | feature schema + backend model family: `nsl` (41 NSL-KDD features) or `cic` (32 modern flow features) |
+
+**Which schema?** `--schema cic` is the better fit for real traffic: its 32
+features (packet sizes, inter-arrival times, TCP flag counts, init windows)
+are all honestly derivable from headers, so nothing is zero-filled and the
+models were trained on 2017 traffic rather than 1998. Requires the backend to
+have run `python -m nids.models train --dataset cic`. `--schema nsl` scores
+against the original NSL-KDD models.
 
 To avoid needing `sudo` every time:
 
@@ -65,9 +73,11 @@ interface, or run the Pi as the network gateway/AP.
   host-side audit data in the original DARPA setup. A future host agent
   (auditd/Wazuh) or Zeek file extraction could fill them.
 
-**Expect domain shift.** The models are trained on 1998-era simulated
-traffic; modern encrypted traffic looks nothing like it, so treat live scores
-as a demo of the pipeline, not production detection.
+The caveats above apply to the default NSL-KDD schema, whose models are
+trained on 1998-era simulated traffic. **`--schema cic` avoids both
+problems** — no zero-filled content features and 2017-era training data —
+though even CIC-IDS2017 is lab traffic, so treat live scores as a strong demo
+rather than production detection.
 
 ## Tests
 

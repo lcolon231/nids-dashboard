@@ -7,13 +7,54 @@ on both FINs, or on idle timeout via sweep()).
 """
 from __future__ import annotations
 
+import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from nids_sensor.flow_features import cic_features
 from nids_sensor.packet import PacketMeta
 from nids_sensor.services import service_name
 
 FlowKey = tuple[str, int, str, int, str]
+
+
+class RunningStats:
+    """Constant-memory count/total/min/max/mean/std accumulator."""
+
+    __slots__ = ("count", "total", "_sumsq", "_min", "_max")
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.total = 0.0
+        self._sumsq = 0.0
+        self._min = math.inf
+        self._max = -math.inf
+
+    def add(self, x: float) -> None:
+        self.count += 1
+        self.total += x
+        self._sumsq += x * x
+        self._min = min(self._min, x)
+        self._max = max(self._max, x)
+
+    @property
+    def mean(self) -> float:
+        return self.total / self.count if self.count else 0.0
+
+    @property
+    def std(self) -> float:
+        if not self.count:
+            return 0.0
+        var = self._sumsq / self.count - self.mean**2
+        return math.sqrt(max(var, 0.0))
+
+    @property
+    def min(self) -> float:
+        return self._min if self.count else 0.0
+
+    @property
+    def max(self) -> float:
+        return self._max if self.count else 0.0
 
 
 @dataclass
@@ -34,6 +75,7 @@ class ConnRecord:
     land: int
     wrong_fragment: int
     urgent: int
+    cic: dict = field(default_factory=dict)  # 32 modern flow features
 
 
 class Flow:
@@ -48,19 +90,48 @@ class Flow:
         self.syn_seen = self.synack_seen = False
         self.orig_fin = self.resp_fin = False
         self.orig_rst = self.resp_rst = False
+        # Modern-schema running stats (see flow_features.cic_features).
+        self.fwd_len = RunningStats()  # ip_len per fwd packet
+        self.bwd_len = RunningStats()
+        self.flow_iat = RunningStats()  # inter-arrival times, µs
+        self.fwd_iat = RunningStats()
+        self.bwd_iat = RunningStats()
+        self._prev_ts: float | None = None
+        self._prev_fwd_ts: float | None = None
+        self._prev_bwd_ts: float | None = None
+        self.tcp_flag_counts: dict[str, int] = {}
+        self.init_win_fwd = self.init_win_bwd = -1
         self.update(meta, from_orig=True)
 
     def update(self, meta: PacketMeta, from_orig: bool) -> None:
         self.last_ts = max(self.last_ts, meta.ts)
+        if self._prev_ts is not None:
+            self.flow_iat.add((meta.ts - self._prev_ts) * 1e6)
+        self._prev_ts = meta.ts
         if from_orig:
             self.src_bytes += meta.payload_len
+            self.fwd_len.add(meta.ip_len)
+            if self._prev_fwd_ts is not None:
+                self.fwd_iat.add((meta.ts - self._prev_fwd_ts) * 1e6)
+            self._prev_fwd_ts = meta.ts
         else:
             self.dst_bytes += meta.payload_len
+            self.bwd_len.add(meta.ip_len)
+            if self._prev_bwd_ts is not None:
+                self.bwd_iat.add((meta.ts - self._prev_bwd_ts) * 1e6)
+            self._prev_bwd_ts = meta.ts
         if meta.is_fragment:
             self.wrong_fragment += 1
         flags = meta.tcp_flags
         if self.proto != "tcp":
             return
+        for ch in flags & {"F", "S", "R", "P", "A", "U"}:
+            self.tcp_flag_counts[ch] = self.tcp_flag_counts.get(ch, 0) + 1
+        if meta.tcp_window >= 0:
+            if from_orig and self.init_win_fwd < 0:
+                self.init_win_fwd = meta.tcp_window
+            elif not from_orig and self.init_win_bwd < 0:
+                self.init_win_bwd = meta.tcp_window
         if "U" in flags:
             self.urgent += 1
         if from_orig:
@@ -122,6 +193,7 @@ class Flow:
             land=int(self.src_ip == self.dst_ip and self.src_port == self.dst_port),
             wrong_fragment=self.wrong_fragment,
             urgent=self.urgent,
+            cic=cic_features(self),
         )
 
 

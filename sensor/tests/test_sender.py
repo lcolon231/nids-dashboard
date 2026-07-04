@@ -27,7 +27,16 @@ def test_flushes_when_batch_full():
     assert body == {"count": 3, "attacks": 0, "results": []}
     assert len(calls) == 1
     assert calls[0].url.path == "/score/live"
+    assert calls[0].url.params["dataset"] == "nsl"
     assert s.pending == 0
+
+
+def test_cic_dataset_param():
+    calls = []
+    s = make_sender(ok_handler(calls), batch_size=1)
+    s.dataset = "cic"
+    s.add({"a": 1})
+    assert calls[0].url.params["dataset"] == "cic"
 
 
 def test_manual_flush_sends_partial_batch():

@@ -19,6 +19,7 @@ A two-tier **Network Intrusion Detection System** dashboard: a Python/FastAPI ma
 - **Unsupervised clustering** — KMeans sweep k=2..10 with inertia + silhouette scoring
 - **Association rule mining** — Apriori (mlxtend) surfaces human-readable attack signatures, e.g. `{flag=RSTR, service=private} → probe` (confidence 1.0, lift 10.8)
 - **Live scoring** — a sensor client streams connection records to `/score/live`; the dashboard's Live Feed panel shows attacks flagged in near-real time
+- **Modern traffic models (CIC-IDS2017)** — a second model family trained on 32 flow-metadata features (sizes, timings, TCP flags) that work on today's encrypted traffic; toggle `nsl`/`cic` in the dashboard, select with `dataset=cic` on the API, or run the Pi sensor with `--schema cic`
 - **Fully reproducible** — data and model artifacts are gitignored and regenerate from two CLI commands
 
 ## Results (KDDTest+)
@@ -47,6 +48,10 @@ pip install -r requirements.txt
 python -m nids.data download      # fetch + verify NSL-KDD -> data/raw/
 python -m nids.models train       # transformer + NB/DT/KMeans -> data/processed/
 python -m nids.association build  # Apriori rules -> data/processed/rules.csv
+
+# optional: modern-traffic models (CIC-IDS2017, ~230 MB download)
+python -m nids.cic download
+python -m nids.models train --dataset cic
 
 pytest                            # 41 tests, synthetic fixtures only
 uvicorn main:app --reload --port 8000
@@ -88,12 +93,14 @@ See [sensor/README.md](sensor/README.md) for capture permissions, feature-deriva
 | Method | Path | Params | Description |
 |--------|------|--------|-------------|
 | GET | `/health` | — | status + loaded models |
-| POST | `/predict` | `model=nb\|dt\|rf\|xgb`, `phase=binary\|multiclass` | classify a batch of records |
-| GET | `/metrics` | `phase=binary\|multiclass` | all-model metrics on KDDTest+ (cached) |
+| POST | `/predict` | `model=nb\|dt\|rf\|xgb`, `phase=binary\|multiclass`, `dataset=nsl\|cic` | classify a batch of records |
+| GET | `/metrics` | `phase=binary\|multiclass`, `dataset=nsl\|cic` | all-model held-out metrics |
 | GET | `/dataset/summary` | `split=train\|test` | rows, cols, class distribution |
 | GET | `/rules` | — | top 20 association rules by lift |
-| POST | `/score/live` | — | batch scoring for the live sensor (DT binary) |
+| POST | `/score/live` | `dataset=nsl\|cic` | batch scoring for the live sensor (DT binary) |
 | GET | `/live/recent` | `limit` | rolling buffer of live-scored events |
+
+`dataset=nsl` (default) uses the NSL-KDD 41-feature models; `dataset=cic` uses models trained on CIC-IDS2017's modern flow-metadata features (32 numeric features derived from packet sizes, timings, and TCP flags — computable on encrypted traffic).
 
 Interactive docs: **http://localhost:8000/docs**
 
@@ -104,7 +111,9 @@ backend/
   nids/
     data.py            NSL-KDD download + verification + loading
     preprocessing.py   FeatureTransformer (one-hot + scaling) + label maps
-    models.py          NB/DT training, KMeans sweep, artifact persistence
+    flowschema.py      modern 32-feature flow schema + CIC label maps
+    cic.py             CIC-IDS2017 download + cleaning + split + scaler
+    models.py          model training (NSL-KDD + CIC), KMeans sweep, persistence
     association.py     Apriori rule mining -> rules.csv
     evaluation.py      accuracy / precision / recall / F1
   tests/               pytest suite — synthetic fixtures, never the real dataset
