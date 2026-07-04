@@ -19,6 +19,7 @@ import json
 import time
 from collections import deque
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 import joblib
@@ -34,6 +35,7 @@ from nids.evaluation import metrics as compute_metrics
 from nids.flowschema import CIC_CATEGORIES, FLOW_FEATURES
 from nids.models import CIC_METRICS_PATH, DATASETS, MODEL_NAMES, PHASES, model_path
 from nids.preprocessing import (
+    PROCESSED_DIR,
     FeatureTransformer,
     MULTICLASS_LABELS,
     binary_labels,
@@ -53,6 +55,28 @@ STATE: dict[str, Any] = {
 # Rolling buffer of recently scored live events for the dashboard Live Feed.
 LIVE_FEED_MAX = 200
 LIVE_FEED: deque[dict] = deque(maxlen=LIVE_FEED_MAX)
+
+# Host-impact content features carried into live events. NSL-KDD provides
+# these as per-connection COUNTS (e.g. files created), not filenames.
+FILE_ACTIVITY_FEATURES = (
+    "num_file_creations",
+    "num_access_files",
+    "num_shells",
+    "num_root",
+    "root_shell",
+    "num_compromised",
+    "hot",
+)
+
+# Persistent attack log (JSONL, one event per line). Survives restarts.
+# Module-level so tests can monkeypatch it to a tmp path.
+ATTACK_LOG_PATH = PROCESSED_DIR / "attack_log.jsonl"
+
+
+def _append_attack_log(event: dict) -> None:
+    ATTACK_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with ATTACK_LOG_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(event) + "\n")
 
 
 def _load_artifacts() -> None:
@@ -245,22 +269,47 @@ def score_live(body: PredictRequest, dataset: DatasetName = Query("nsl")) -> dic
     """
     results = _predict(body.records, "dt", "binary", dataset)
     now = time.time()
+    logged_at = datetime.now(timezone.utc).isoformat()
     for rec, res in zip(body.records, results):
-        LIVE_FEED.append(
-            {
-                "ts": now,
-                "dataset": dataset,
-                "protocol_type": rec.get("protocol_type"),
-                "service": rec.get("service"),
-                "flag": rec.get("flag"),
-                **res,
-            }
-        )
+        # File-activity counts exist only in the NSL-KDD schema; CIC records
+        # leave them None and has_file_activity False.
+        event = {
+            "ts": now,
+            "dataset": dataset,
+            "protocol_type": rec.get("protocol_type"),
+            "service": rec.get("service"),
+            "flag": rec.get("flag"),
+            **{k: rec.get(k) for k in FILE_ACTIVITY_FEATURES},
+            "has_file_activity": bool(
+                (rec.get("num_file_creations") or 0) > 0
+                or (rec.get("num_access_files") or 0) > 0
+            ),
+            **res,
+        }
+        LIVE_FEED.append(event)
+        if res["is_attack"]:
+            _append_attack_log({**event, "logged_at": logged_at})
     return {
         "count": len(results),
         "attacks": sum(r["is_attack"] for r in results),
         "results": results,
     }
+
+
+@app.get("/attacks/log")
+def attacks_log(
+    limit: int = Query(100, ge=1, le=1000),
+    files_only: bool = Query(False),
+) -> dict:
+    """Persisted attack log, newest-first. files_only keeps host-impact hits."""
+    attacks: list[dict] = []
+    if ATTACK_LOG_PATH.exists():
+        with ATTACK_LOG_PATH.open(encoding="utf-8") as f:
+            attacks = [json.loads(line) for line in f if line.strip()]
+    if files_only:
+        attacks = [a for a in attacks if a.get("has_file_activity")]
+    attacks = attacks[-limit:][::-1]  # file is append-order; newest first
+    return {"count": len(attacks), "attacks": attacks}
 
 
 @app.get("/live/recent")

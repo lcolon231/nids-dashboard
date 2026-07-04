@@ -20,6 +20,7 @@ A two-tier **Network Intrusion Detection System** dashboard: a Python/FastAPI ma
 - **Association rule mining** — Apriori (mlxtend) surfaces human-readable attack signatures, e.g. `{flag=RSTR, service=private} → probe` (confidence 1.0, lift 10.8)
 - **Live scoring** — a sensor client streams connection records to `/score/live`; the dashboard's Live Feed panel shows attacks flagged in near-real time
 - **Modern traffic models (CIC-IDS2017)** — a second model family trained on 32 flow-metadata features (sizes, timings, TCP flags) that work on today's encrypted traffic; toggle `nsl`/`cic` in the dashboard, select with `dataset=cic` on the API, or run the Pi sensor with `--schema cic`
+- **Attack logging with host-impact visibility** — every flagged attack is appended to a persistent JSONL log (`backend/data/processed/attack_log.jsonl`) enriched with NSL-KDD's file-activity features (`num_file_creations`, `num_access_files`, `root_shell`, ...); the Live Feed shows a 📁 host-impact badge on attacks that touched files. **Limitation:** NSL-KDD provides file-activity *counts*, not filenames — actual affected-file paths would require a host-based log source (auditd/Wazuh) or Zeek `files.log`, which is out of scope here.
 - **Fully reproducible** — data and model artifacts are gitignored and regenerate from two CLI commands
 
 ## Results (KDDTest+)
@@ -99,6 +100,7 @@ See [sensor/README.md](sensor/README.md) for capture permissions, feature-deriva
 | GET | `/rules` | — | top 20 association rules by lift |
 | POST | `/score/live` | `dataset=nsl\|cic` | batch scoring for the live sensor (DT binary) |
 | GET | `/live/recent` | `limit` | rolling buffer of live-scored events |
+| GET | `/attacks/log` | `limit` (≤1000), `files_only` | persisted attack log (JSONL), newest-first |
 
 `dataset=nsl` (default) uses the NSL-KDD 41-feature models; `dataset=cic` uses models trained on CIC-IDS2017's modern flow-metadata features (32 numeric features derived from packet sizes, timings, and TCP flags — computable on encrypted traffic).
 
