@@ -47,10 +47,14 @@ def client(monkeypatch, tmp_path):
             for p in ("binary", "multiclass")
         }
         main.STATE["metrics_cache"] = {}
+        main.STATE["anomaly_model"] = None  # off by default; overridden per-test
 
     monkeypatch.setattr(main, "_load_artifacts", fake_load)
     monkeypatch.setattr(main, "ATTACK_LOG_PATH", tmp_path / "attack_log.jsonl")
+    monkeypatch.setattr(main, "WINDOW_BASELINE_PATH", tmp_path / "window_baseline.jsonl")
     main.LIVE_FEED.clear()
+    main.ANOMALY_FEED.clear()
+    main.WINDOW_AGGREGATOR.flush_all()
     with TestClient(main.app) as c:
         yield c
 
@@ -63,6 +67,7 @@ def empty_client(monkeypatch):
         main.STATE["transformers"] = {}
         main.STATE["models"] = {}
         main.STATE["metrics_cache"] = {}
+        main.STATE["anomaly_model"] = None
 
     monkeypatch.setattr(main, "_load_artifacts", fake_load)
     with TestClient(main.app) as c:
@@ -290,3 +295,86 @@ class TestCicDataset:
     def test_unloaded_cic_model_503(self, empty_client):
         r = empty_client.post("/predict?dataset=cic", json={"records": cic_records(1)})
         assert r.status_code == 503
+
+
+def cic_records_with_meta(sources_ports) -> list[dict]:
+    """CIC records carrying per-source window meta. sources_ports is a list of
+    (src_ip, dst_ip, dst_port, flag) tuples."""
+    recs = cic_records(len(sources_ports))
+    for rec, (src, dst, port, flag) in zip(recs, sources_ports):
+        rec["meta"] = {"src_ip": src, "dst_ip": dst, "dst_port": port,
+                       "flag": flag, "bytes": 100}
+    return recs
+
+
+class TestAnomalyEndpoints:
+    def test_status_reports_no_model_and_baseline_growth(self, client):
+        body = client.get("/anomalies/status").json()
+        assert body["model_loaded"] is False
+        assert body["baseline_windows_captured"] == 0
+        assert body["window_seconds"] == main.WINDOW_SECONDS
+
+    def test_windowing_captures_baseline_when_windows_close(self, client):
+        # window 1: flows at ts within [0,60); window 2 at ts>=60 closes it.
+        early = cic_records_with_meta([("A", "X", 80, "SF")])
+        early[0]["meta"]["ts"] = 10
+        # Post early flows (they land in the current wall-clock window), then a
+        # later post advances time. We drive time via the aggregator directly
+        # to make the test deterministic.
+        main.WINDOW_AGGREGATOR.add({"src_ip": "A", "dst_ip": "X", "dst_port": 80,
+                                    "flag": "SF", "bytes": 100}, ts=10)
+        main.WINDOW_AGGREGATOR.add({"src_ip": "A", "dst_ip": "X", "dst_port": 81,
+                                    "flag": "SF", "bytes": 100}, ts=20)
+        main._process_finalized_windows(now=200)  # closes the [0,60) window
+        status = client.get("/anomalies/status").json()
+        assert status["baseline_windows_captured"] == 1
+        # no model -> nothing scored into the anomaly feed
+        assert client.get("/anomalies/recent").json()["count"] == 0
+
+    def test_recent_scores_windows_when_model_loaded(self, client):
+        # Inject a fake anomaly model that flags any window with a big fan-out.
+        class FakeAnomaly:
+            def score(self, w):
+                hot = w["distinct_dst_ports"] > 50
+                return {"anomaly_score": 9.9 if hot else 0.1, "is_anomaly": hot}
+
+        main.STATE["anomaly_model"] = FakeAnomaly()
+        # a scan window: one source, 100 ports
+        for port in range(100):
+            main.WINDOW_AGGREGATOR.add(
+                {"src_ip": "scanner", "dst_ip": "victim", "dst_port": port,
+                 "flag": "S0", "bytes": 0}, ts=5)
+        # a benign window from another source
+        main.WINDOW_AGGREGATOR.add(
+            {"src_ip": "user", "dst_ip": "web", "dst_port": 443,
+             "flag": "SF", "bytes": 5000}, ts=5)
+        main._process_finalized_windows(now=200)
+
+        body = client.get("/anomalies/recent").json()
+        assert body["count"] == 2
+        assert body["anomalies"] == 1
+        scanner = [w for w in body["windows"] if w["src_ip"] == "scanner"][0]
+        assert scanner["is_anomaly"] is True
+        assert scanner["distinct_dst_ports"] == 100
+
+    def test_anomalies_only_filter(self, client):
+        class FakeAnomaly:
+            def score(self, w):
+                hot = w["src_ip"] == "bad"
+                return {"anomaly_score": 5.0 if hot else 0.0, "is_anomaly": hot}
+
+        main.STATE["anomaly_model"] = FakeAnomaly()
+        for src in ("good", "bad"):
+            main.WINDOW_AGGREGATOR.add(
+                {"src_ip": src, "dst_ip": "h", "dst_port": 1, "flag": "SF", "bytes": 1}, ts=5)
+        main._process_finalized_windows(now=200)
+        body = client.get("/anomalies/recent?anomalies_only=true").json()
+        assert body["count"] == 1
+        assert body["windows"][0]["src_ip"] == "bad"
+
+    def test_score_live_feeds_windowing_via_meta(self, client):
+        recs = cic_records_with_meta([("10.0.0.9", "8.8.8.8", 53, "SF")])
+        r = client.post("/score/live?dataset=cic", json={"records": recs})
+        assert r.status_code == 200
+        # the flow's meta opened a per-source window
+        assert client.get("/anomalies/status").json()["windows_open"] >= 1

@@ -68,6 +68,34 @@ export interface LiveRecent {
   events: LiveEvent[];
 }
 
+// Phase 11: per-source windowed anomaly detection.
+export interface AnomalyWindow {
+  src_ip: string;
+  window_start: number;
+  flow_count: number;
+  distinct_dst_ports: number;
+  distinct_dst_hosts: number;
+  failed_ratio: number;
+  ports_per_host: number;
+  total_bytes: number;
+  mean_bytes: number;
+  anomaly_score: number;
+  is_anomaly: boolean;
+}
+
+export interface AnomalyRecent {
+  count: number;
+  anomalies: number;
+  windows: AnomalyWindow[];
+}
+
+export interface AnomalyStatus {
+  model_loaded: boolean;
+  window_seconds: number;
+  baseline_windows_captured: number;
+  windows_open: number;
+}
+
 async function get<T>(path: string): Promise<T> {
   const r = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
   if (!r.ok) throw new Error(`${path} -> ${r.status}`);
@@ -82,3 +110,6 @@ export const fetchSummary = (split: Split) =>
 export const fetchRules = () => get<{ count: number; rules: Rule[] }>("/rules");
 export const fetchLiveRecent = (limit = 50) =>
   get<LiveRecent>(`/live/recent?limit=${limit}`);
+export const fetchAnomaliesRecent = (limit = 50) =>
+  get<AnomalyRecent>(`/anomalies/recent?limit=${limit}`);
+export const fetchAnomalyStatus = () => get<AnomalyStatus>("/anomalies/status");

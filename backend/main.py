@@ -29,6 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from nids import data
+from nids.anomaly import BASELINE_PATH, WindowAnomalyModel
 from nids.association import RULES_PATH
 from nids.cic import FlowTransformer
 from nids.evaluation import metrics as compute_metrics
@@ -41,6 +42,7 @@ from nids.preprocessing import (
     binary_labels,
     multiclass_labels,
 )
+from nids.windows import WindowAggregator
 
 BINARY_LABELS = ["normal", "attack"]
 REQUIRED_FEATURES = {"nsl": data.FEATURE_COLUMNS, "cic": FLOW_FEATURES}
@@ -72,11 +74,36 @@ FILE_ACTIVITY_FEATURES = (
 # Module-level so tests can monkeypatch it to a tmp path.
 ATTACK_LOG_PATH = PROCESSED_DIR / "attack_log.jsonl"
 
+# --- Phase 11: per-source windowed anomaly detection -------------------------
+WINDOW_SECONDS = 60.0
+WINDOW_AGGREGATOR = WindowAggregator(window_seconds=WINDOW_SECONDS)
+# Rolling buffer of recently scored windows for the dashboard Anomalies panel.
+ANOMALY_FEED_MAX = 200
+ANOMALY_FEED: deque[dict] = deque(maxlen=ANOMALY_FEED_MAX)
+WINDOW_BASELINE_PATH = BASELINE_PATH
+
 
 def _append_attack_log(event: dict) -> None:
     ATTACK_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with ATTACK_LOG_PATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(event) + "\n")
+
+
+def _append_baseline(window: dict) -> None:
+    WINDOW_BASELINE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with WINDOW_BASELINE_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(window) + "\n")
+
+
+def _process_finalized_windows(now: float) -> None:
+    """Harvest closed windows: always append to the baseline, and if the
+    anomaly model is loaded, score them into the anomaly feed."""
+    model = STATE.get("anomaly_model")
+    for window in WINDOW_AGGREGATOR.pop_finalized(now):
+        _append_baseline(window)
+        if model is not None:
+            scored = {**window, **model.score(window)}
+            ANOMALY_FEED.append(scored)
 
 
 def _load_artifacts() -> None:
@@ -94,6 +121,10 @@ def _load_artifacts() -> None:
                 path = model_path(model, phase, dataset)
                 if path.exists():
                     STATE["models"][(dataset, model, phase)] = joblib.load(path)
+    try:
+        STATE["anomaly_model"] = WindowAnomalyModel.load()
+    except FileNotFoundError:
+        STATE["anomaly_model"] = None
 
 
 @asynccontextmanager
@@ -289,6 +320,11 @@ def score_live(body: PredictRequest, dataset: DatasetName = Query("nsl")) -> dic
         LIVE_FEED.append(event)
         if res["is_attack"]:
             _append_attack_log({**event, "logged_at": logged_at})
+        # Phase 11: feed the flow into per-source windowing (needs sensor meta).
+        meta = rec.get("meta")
+        if meta:
+            WINDOW_AGGREGATOR.add(meta, now)
+    _process_finalized_windows(now)
     return {
         "count": len(results),
         "attacks": sum(r["is_attack"] for r in results),
@@ -320,4 +356,39 @@ def live_recent(limit: int = Query(50, ge=1, le=LIVE_FEED_MAX)) -> dict:
         "count": len(events),
         "attacks": sum(e["is_attack"] for e in events),
         "events": events,
+    }
+
+
+@app.get("/anomalies/recent")
+def anomalies_recent(
+    limit: int = Query(50, ge=1, le=ANOMALY_FEED_MAX),
+    anomalies_only: bool = Query(False),
+) -> dict:
+    """Recently scored per-source windows, newest first (Anomalies panel).
+
+    Requires a trained window-anomaly model; until then this is empty even as
+    the baseline accumulates (see /anomalies/status)."""
+    windows = list(ANOMALY_FEED)
+    if anomalies_only:
+        windows = [w for w in windows if w.get("is_anomaly")]
+    windows = windows[-limit:][::-1]
+    return {
+        "count": len(windows),
+        "anomalies": sum(w.get("is_anomaly", False) for w in windows),
+        "windows": windows,
+    }
+
+
+@app.get("/anomalies/status")
+def anomalies_status() -> dict:
+    """Whether the anomaly model is loaded + how much baseline is captured."""
+    baseline_windows = 0
+    if WINDOW_BASELINE_PATH.exists():
+        with WINDOW_BASELINE_PATH.open(encoding="utf-8") as f:
+            baseline_windows = sum(1 for line in f if line.strip())
+    return {
+        "model_loaded": STATE.get("anomaly_model") is not None,
+        "window_seconds": WINDOW_SECONDS,
+        "baseline_windows_captured": baseline_windows,
+        "windows_open": len(WINDOW_AGGREGATOR),
     }
