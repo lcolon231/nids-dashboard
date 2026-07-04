@@ -14,7 +14,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(prog="nids_sensor", description=__doc__)
     ap.add_argument("--url", default="http://127.0.0.1:8000", help="API base URL")
     ap.add_argument("--iface", default=None, help="interface to sniff (default: scapy's default)")
-    ap.add_argument("--bpf", default="ip", help="BPF capture filter (default: 'ip')")
+    ap.add_argument("--bpf", default="",
+                    help="BPF capture filter (default: none; IP frames are "
+                         "filtered in software). Set e.g. 'ip' to push filtering "
+                         "into the kernel — but note some interfaces silently drop "
+                         "all packets when a BPF filter is set with an unknown link type.")
     ap.add_argument("--batch", type=int, default=10, help="records per POST batch")
     ap.add_argument("--flush-interval", type=float, default=2.0,
                     help="max seconds before a partial batch is sent")

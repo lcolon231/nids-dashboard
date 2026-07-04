@@ -35,7 +35,7 @@ Options:
 |------|---------|-------------|
 | `--url` | `http://127.0.0.1:8000` | backend API base URL |
 | `--iface` | scapy default | interface to sniff (e.g. `eth0`, `wlan0`) |
-| `--bpf` | `ip` | BPF capture filter |
+| `--bpf` | *(none)* | BPF capture filter; IP frames are filtered in software by default. Set e.g. `ip` to filter in the kernel — but some interfaces (Pi `wlan0`) silently drop all packets when a BPF filter is set with an unknown link type |
 | `--batch` | 10 | records per POST |
 | `--flush-interval` | 2.0 | max seconds before a partial batch is sent |
 | `--idle-timeout` | 30.0 | idle seconds before an open TCP flow finalizes |

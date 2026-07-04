@@ -151,7 +151,7 @@ class SensorEngine:
 def run(
     url: str,
     iface: str | None = None,
-    bpf: str = "ip",
+    bpf: str = "",
     batch_size: int = 10,
     flush_interval: float = 2.0,
     idle_timeout: float = 30.0,
@@ -168,9 +168,14 @@ def run(
 
     t = threading.Thread(target=sweeper, daemon=True)
     t.start()
-    print(f"[ok  ] capturing on {iface or 'default iface'} (filter: {bpf!r}) -> {url}/score/live")
+    # No BPF filter by default: on some interfaces (e.g. Raspberry Pi wlan0)
+    # scapy can't identify the link type and a kernel BPF filter silently
+    # drops every packet. packet_to_meta() already discards non-IP frames in
+    # Python, so the filter is redundant; --bpf re-enables it if wanted.
+    filter_desc = bpf or "none (IP filtered in software)"
+    print(f"[ok  ] capturing on {iface or 'default iface'} (filter: {filter_desc}) -> {url}/score/live")
     try:
-        sniff(iface=iface, filter=bpf, store=False, prn=engine.on_packet)
+        sniff(iface=iface, filter=bpf or None, store=False, prn=engine.on_packet)
     except KeyboardInterrupt:
         pass
     finally:
