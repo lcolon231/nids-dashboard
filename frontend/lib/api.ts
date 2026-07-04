@@ -5,6 +5,7 @@ export const API_BASE =
 
 export type Phase = "binary" | "multiclass";
 export type Split = "train" | "test";
+export type Dataset = "nsl" | "cic";
 
 export interface Health {
   status: string;
@@ -22,6 +23,7 @@ export interface MetricSet {
 export interface MetricsResponse {
   phase: Phase;
   split: string;
+  dataset: Dataset;
   metrics: { nb: MetricSet; dt: MetricSet; rf: MetricSet; xgb: MetricSet };
 }
 
@@ -73,8 +75,8 @@ async function get<T>(path: string): Promise<T> {
 }
 
 export const fetchHealth = () => get<Health>("/health");
-export const fetchMetrics = (phase: Phase) =>
-  get<MetricsResponse>(`/metrics?phase=${phase}`);
+export const fetchMetrics = (phase: Phase, dataset: Dataset = "nsl") =>
+  get<MetricsResponse>(`/metrics?phase=${phase}&dataset=${dataset}`);
 export const fetchSummary = (split: Split) =>
   get<DatasetSummary>(`/dataset/summary?split=${split}`);
 export const fetchRules = () => get<{ count: number; rules: Rule[] }>("/rules");
