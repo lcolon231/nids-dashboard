@@ -17,10 +17,12 @@ class LiveScoreSender:
         batch_size: int = 10,
         client: httpx.Client | None = None,
         dataset: str = "nsl",  # which backend model family scores the batch
+        api_key: str | None = None,  # sent as X-API-Key if the backend requires it
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.batch_size = batch_size
         self.dataset = dataset
+        self._headers = {"X-API-Key": api_key} if api_key else {}
         self._client = client or httpx.Client(timeout=10.0)
         self._buffer: list[dict] = []
 
@@ -45,6 +47,7 @@ class LiveScoreSender:
                 f"{self.base_url}/score/live",
                 params={"dataset": self.dataset},
                 json={"records": self._buffer},
+                headers=self._headers,
             )
             r.raise_for_status()
         except httpx.HTTPError as e:

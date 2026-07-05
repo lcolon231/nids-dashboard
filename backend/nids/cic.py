@@ -52,9 +52,20 @@ def download(force: bool = False) -> None:
     print(f"[get ] {CIC_ZIP_URL} -> {dest} (~230 MB)")
     urllib.request.urlretrieve(CIC_ZIP_URL, dest)
     with zipfile.ZipFile(dest) as zf:
-        zf.extractall(CIC_DIR)
+        _safe_extract(zf, CIC_DIR)
     dest.unlink()
     print(f"[ok  ] extracted {len(list(CIC_DIR.glob('**/*.csv')))} CSVs -> {CIC_DIR}")
+
+
+def _safe_extract(zf: zipfile.ZipFile, dest: Path) -> None:
+    """Extract only members that stay within `dest` — rejects zip-slip
+    entries (e.g. '../../etc/x') that would write outside the target dir."""
+    dest = dest.resolve()
+    for member in zf.namelist():
+        target = (dest / member).resolve()
+        if not target.is_relative_to(dest):
+            raise ValueError(f"unsafe path in archive (zip-slip): {member!r}")
+    zf.extractall(dest)
 
 
 def load() -> pd.DataFrame:

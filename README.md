@@ -1,16 +1,18 @@
 # NIDS Dashboard
 
-A two-tier **Network Intrusion Detection System** dashboard: a Python/FastAPI machine-learning backend trained on the NSL-KDD dataset, and a Next.js 15 frontend that visualizes model performance, dataset composition, discovered attack patterns, and a real-time scored traffic feed.
+A two-tier **Network Intrusion Detection System** dashboard: a Python/FastAPI machine-learning backend and a Next.js 15 frontend. It trains supervised classifiers on two datasets (NSL-KDD and CIC-IDS2017), mines attack signatures, scores live traffic from a real Raspberry Pi packet-capture sensor, flags scans/floods with an unsupervised anomaly layer trained on your own network, and pushes alerts to your phone when you're attacked.
 
 ![NIDS Dashboard — model performance, dataset summary, association rules, and live feed panels](docs/screenshot.png)
 
 ```
-┌─────────────┐   POST /score/live   ┌──────────────────┐   GET /metrics /rules ...   ┌──────────────┐
-│   Sensor     │ ───────────────────► │  FastAPI backend  │ ◄────────────────────────── │   Next.js     │
-│ (Pi / sim)   │                      │  :8000            │                             │  dashboard    │
-└─────────────┘                      │  NB · DT · KMeans │                             │  :3000        │
-                                     │  Apriori rules    │                             └──────────────┘
-                                     └──────────────────┘
+┌──────────────┐  POST /score/live   ┌──────────────────────────────┐   GET /metrics /anomalies …  ┌──────────────┐
+│  Pi sensor   │ ───41 NSL / 32 CIC─► │       FastAPI backend         │ ◄────────────────────────── │   Next.js     │
+│  (scapy)     │                      │  :8000                        │                             │  dashboard    │
+│  or sim      │                      │  NB·DT·RF·XGB  (NSL + CIC)    │ ──────────────────────────► │  :3000        │
+└──────────────┘                      │  KMeans · Apriori rules       │                             └──────────────┘
+                                      │  per-source anomaly (iForest) │
+                                      │  attack alerts ─► 📱 ntfy/…    │
+                                      └──────────────────────────────┘
 ```
 
 ## Features
@@ -160,6 +162,7 @@ backend/
     cic.py             CIC-IDS2017 download + cleaning + split + scaler
     windows.py         per-source-IP time-window aggregation
     anomaly.py         IsolationForest window-anomaly model + baseline/train
+    alerts.py          throttled attack alerts (ntfy/Discord/Slack/email)
     models.py          model training (NSL-KDD + CIC), KMeans sweep, persistence
     association.py     Apriori rule mining -> rules.csv
     evaluation.py      accuracy / precision / recall / F1
@@ -169,7 +172,7 @@ backend/
   SPEC.md              full build spec
 frontend/
   app/                 Next.js 15 (App Router)
-  components/          MetricsPanel · DatasetPanel · RulesPanel · LiveFeedPanel
+  components/          Metrics · Dataset · Rules · LiveFeed · Anomaly panels
   lib/api.ts           typed API client
 sensor/
   nids_sensor/         Raspberry Pi capture client (scapy -> flows -> features)
@@ -178,12 +181,32 @@ sensor/
 
 ## Stack
 
-**Backend:** FastAPI · scikit-learn · XGBoost · mlxtend · pandas · joblib · pytest
+**Backend:** FastAPI · scikit-learn (incl. IsolationForest) · XGBoost · mlxtend · pandas · joblib · pytest
+**Sensor:** scapy · httpx (pure-Python core, testable without capture or root)
 **Frontend:** Next.js 15 · React 19 · TypeScript · Tailwind CSS 4
 
-## Dataset
+## Security
 
-[NSL-KDD](https://github.com/defcom17/NSL_KDD) — a curated revision of the KDD Cup '99 intrusion detection benchmark. 41 features per connection record; labels cover normal traffic plus attacks in 4 families (DoS, Probe, R2L, U2R).
+The API is unauthenticated by default (fine on an isolated home lab). For anything beyond that, set an API key — the backend then requires an `X-API-Key` header on every request except `/health`:
+
+```powershell
+$env:NIDS_API_KEY = "a-long-random-string"
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+Point the sensor at the same key (or set `NIDS_API_KEY` in its environment):
+
+```bash
+sudo sensor/.venv/bin/python -m nids_sensor --iface wlan0 --url http://<host>:8000 \
+     --schema cic --api-key "a-long-random-string"
+```
+
+Authenticating the sensor feed also closes the **anomaly-baseline poisoning** vector — without it, anyone on the network can inject windows into your training baseline via `/score/live`. Other hardening baked in: request batches are capped (`MAX_RECORDS`) and restricted to known feature columns (memory-exhaustion DoS), the attack/baseline JSONL logs rotate in place at a byte cap (disk DoS) and are tail-read (`/attacks/log` stays bounded regardless of log size), and CIC archive extraction rejects zip-slip paths.
+
+## Datasets
+
+- [NSL-KDD](https://github.com/defcom17/NSL_KDD) — a curated revision of the KDD Cup '99 benchmark. 41 features per connection; labels cover normal traffic plus 4 attack families (DoS, Probe, R2L, U2R). Test set includes attack types unseen in training.
+- [CIC-IDS2017](https://www.unb.ca/cic/datasets/ids-2017.html) — modern (2017) labeled traffic. This project uses 32 flow-metadata features (packet sizes, inter-arrival times, TCP flag counts) that are computable live from packet headers, so the same models work on encrypted traffic.
 
 ## License
 

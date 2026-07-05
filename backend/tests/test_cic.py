@@ -131,6 +131,36 @@ class TestFlowTransformer:
             cic.FlowTransformer.load(tmp_path / "nope.joblib")
 
 
+class TestSafeExtract:
+    def _make_zip(self, path, members):
+        import zipfile
+        with zipfile.ZipFile(path, "w") as zf:
+            for name, content in members.items():
+                zf.writestr(name, content)
+
+    def test_extracts_normal_members(self, tmp_path):
+        import zipfile
+        zpath = tmp_path / "ok.zip"
+        self._make_zip(zpath, {"a.csv": "x", "sub/b.csv": "y"})
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with zipfile.ZipFile(zpath) as zf:
+            cic._safe_extract(zf, dest)
+        assert (dest / "a.csv").exists()
+        assert (dest / "sub" / "b.csv").exists()
+
+    def test_rejects_zip_slip(self, tmp_path):
+        import zipfile
+        zpath = tmp_path / "evil.zip"
+        self._make_zip(zpath, {"../escape.csv": "pwned"})
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with zipfile.ZipFile(zpath) as zf:
+            with pytest.raises(ValueError, match="zip-slip"):
+                cic._safe_extract(zf, dest)
+        assert not (tmp_path / "escape.csv").exists()
+
+
 class TestCicModelPath:
     def test_cic_prefix(self):
         assert models.model_path("dt", "binary", "cic").name == "cic_dt_binary.joblib"
