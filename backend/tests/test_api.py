@@ -378,3 +378,36 @@ class TestAnomalyEndpoints:
         assert r.status_code == 200
         # the flow's meta opened a per-source window
         assert client.get("/anomalies/status").json()["windows_open"] >= 1
+
+
+class TestAlertEndpoints:
+    def test_status_disabled_by_default(self, client):
+        body = client.get("/alerts/status").json()
+        assert body["enabled"] is False
+        assert body["kind"] == "ntfy"
+
+    def test_test_endpoint_503_when_unconfigured(self, client):
+        assert client.post("/alerts/test").status_code == 503
+
+    def test_test_endpoint_sends_when_configured(self, client, monkeypatch):
+        from nids.alerts import AlertConfig, AlertNotifier
+
+        sent = []
+        cfg = AlertConfig(kind="generic", webhook_url="http://hook.test")
+        monkeypatch.setattr(main, "NOTIFIER", AlertNotifier(cfg, sender=lambda t, m: sent.append(m)))
+        body = client.post("/alerts/test").json()
+        assert body["sent"] is True
+        assert len(sent) == 1
+
+    def test_score_live_triggers_alert_over_threshold(self, client, monkeypatch):
+        from nids.alerts import AlertConfig, AlertNotifier
+
+        sent = []
+        cfg = AlertConfig(kind="generic", webhook_url="http://hook.test",
+                          min_attacks=3, cooldown=0)
+        monkeypatch.setattr(main, "NOTIFIER", AlertNotifier(cfg, sender=lambda t, m: sent.append(m)))
+        # fake dt flags every record as attack; 4 records >= min_attacks 3
+        recs = cic_records_with_meta([("bad", "v", p, "S0") for p in range(4)])
+        client.post("/score/live?dataset=cic", json={"records": recs})
+        assert len(sent) == 1
+        assert "bad" in sent[0]

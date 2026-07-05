@@ -21,6 +21,7 @@ A two-tier **Network Intrusion Detection System** dashboard: a Python/FastAPI ma
 - **Live scoring** — a sensor client streams connection records to `/score/live`; the dashboard's Live Feed panel shows attacks flagged in near-real time
 - **Modern traffic models (CIC-IDS2017)** — a second model family trained on 32 flow-metadata features (sizes, timings, TCP flags) that work on today's encrypted traffic; toggle `nsl`/`cic` in the dashboard, select with `dataset=cic` on the API, or run the Pi sensor with `--schema cic`
 - **Unsupervised anomaly layer** — per-source-IP time-window aggregation (port/host fan-out, failed-connection ratio, byte volume) fed to an IsolationForest trained on *your own* network's normal traffic. Catches scans and floods the per-flow models miss (a single probe is featureless; one source hitting 999 ports in 5s is not). No labels needed — `python -m nids.anomaly train` after a baseline capture
+- **Attack alerts** — get a phone push (ntfy.sh), Discord/Slack message, or email when you're attacked. Aggregated + throttled so a scan sends one summary alert, not thousands. Configured entirely by environment variables; a no-op until set
 - **Attack logging with host-impact visibility** — every flagged attack is appended to a persistent JSONL log (`backend/data/processed/attack_log.jsonl`) enriched with NSL-KDD's file-activity features (`num_file_creations`, `num_access_files`, `root_shell`, ...); the Live Feed shows a 📁 host-impact badge on attacks that touched files. **Limitation:** NSL-KDD provides file-activity *counts*, not filenames — actual affected-file paths would require a host-based log source (auditd/Wazuh) or Zeek `files.log`, which is out of scope here.
 - **Fully reproducible** — data and model artifacts are gitignored and regenerate from two CLI commands
 
@@ -104,6 +105,8 @@ See [sensor/README.md](sensor/README.md) for capture permissions, feature-deriva
 | GET | `/attacks/log` | `limit` (≤1000), `files_only` | persisted attack log (JSONL), newest-first |
 | GET | `/anomalies/recent` | `limit`, `anomalies_only` | recently scored per-source windows, newest-first |
 | GET | `/anomalies/status` | — | anomaly-model loaded? + baseline windows captured |
+| GET | `/alerts/status` | — | alert channel + throttle config (no secrets) |
+| POST | `/alerts/test` | — | send a test alert now (bypasses throttle) |
 
 `dataset=nsl` (default) uses the NSL-KDD 41-feature models; `dataset=cic` uses models trained on CIC-IDS2017's modern flow-metadata features (32 numeric features derived from packet sizes, timings, and TCP flags — computable on encrypted traffic).
 
@@ -120,6 +123,29 @@ python -m nids.anomaly train
 #    dashboard's Anomalies panel scores live windows. Then stage a scan
 #    (nmap against the sensor host) and watch it flag.
 ```
+
+### Attack alerts (get notified when attacked)
+
+Set environment variables on the backend host before starting uvicorn. Alerts are a no-op until configured, aggregated + throttled so a scan sends one summary (not thousands), and per-flow attacks must cross `MIN_ATTACKS` to fire (anomalous windows always fire).
+
+```powershell
+# Phone push via ntfy.sh — install the ntfy app, subscribe to a topic, then:
+$env:NIDS_ALERT_KIND    = "ntfy"
+$env:NIDS_ALERT_WEBHOOK = "https://ntfy.sh/your-secret-topic-name"
+uvicorn main:app --host 0.0.0.0 --port 8000
+# verify delivery lands on your phone:
+curl -X POST http://127.0.0.1:8000/alerts/test
+```
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `NIDS_ALERT_KIND` | `ntfy` | `ntfy` \| `discord` \| `slack` \| `generic` \| `email` |
+| `NIDS_ALERT_WEBHOOK` | — | URL to POST to (ntfy topic / Discord / Slack / custom) |
+| `NIDS_ALERT_COOLDOWN` | `60` | min seconds between alerts |
+| `NIDS_ALERT_MIN_ATTACKS` | `5` | per-flow attacks needed to alert |
+| `NIDS_ALERT_EMAIL_TO` / `_SMTP_HOST` / `_SMTP_PORT` / `_SMTP_USER` / `_SMTP_PASSWORD` | — | email channel (use a Gmail App Password) |
+
+Discord/Slack use that channel's incoming-webhook URL; `generic` POSTs `{"title","message"}` JSON to any endpoint.
 
 Interactive docs: **http://localhost:8000/docs**
 

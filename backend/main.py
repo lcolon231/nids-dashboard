@@ -29,6 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from nids import data
+from nids.alerts import AlertConfig, AlertNotifier
 from nids.anomaly import BASELINE_PATH, WindowAnomalyModel
 from nids.association import RULES_PATH
 from nids.cic import FlowTransformer
@@ -82,6 +83,9 @@ ANOMALY_FEED_MAX = 200
 ANOMALY_FEED: deque[dict] = deque(maxlen=ANOMALY_FEED_MAX)
 WINDOW_BASELINE_PATH = BASELINE_PATH
 
+# --- Phase 12: outbound attack alerts (configured via env; no-op if unset) ---
+NOTIFIER = AlertNotifier(AlertConfig.from_env())
+
 
 def _append_attack_log(event: dict) -> None:
     ATTACK_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -104,6 +108,10 @@ def _process_finalized_windows(now: float) -> None:
         if model is not None:
             scored = {**window, **model.score(window)}
             ANOMALY_FEED.append(scored)
+            if scored["is_anomaly"]:
+                NOTIFIER.record_anomaly(
+                    scored["src_ip"], scored["anomaly_score"], scored["distinct_dst_ports"]
+                )
 
 
 def _load_artifacts() -> None:
@@ -301,6 +309,7 @@ def score_live(body: PredictRequest, dataset: DatasetName = Query("nsl")) -> dic
     results = _predict(body.records, "dt", "binary", dataset)
     now = time.time()
     logged_at = datetime.now(timezone.utc).isoformat()
+    attack_sources: set[str] = set()
     for rec, res in zip(body.records, results):
         # File-activity counts exist only in the NSL-KDD schema; CIC records
         # leave them None and has_file_activity False.
@@ -318,16 +327,22 @@ def score_live(body: PredictRequest, dataset: DatasetName = Query("nsl")) -> dic
             **res,
         }
         LIVE_FEED.append(event)
+        meta = rec.get("meta")
         if res["is_attack"]:
             _append_attack_log({**event, "logged_at": logged_at})
+            if meta and meta.get("src_ip"):
+                attack_sources.add(meta["src_ip"])
         # Phase 11: feed the flow into per-source windowing (needs sensor meta).
-        meta = rec.get("meta")
         if meta:
             WINDOW_AGGREGATOR.add(meta, now)
     _process_finalized_windows(now)
+    # Phase 12: aggregate + throttle outbound attack alerts.
+    attacks = sum(r["is_attack"] for r in results)
+    NOTIFIER.record_attacks(attacks, attack_sources)
+    NOTIFIER.maybe_flush(now)
     return {
         "count": len(results),
-        "attacks": sum(r["is_attack"] for r in results),
+        "attacks": attacks,
         "results": results,
     }
 
@@ -392,3 +407,21 @@ def anomalies_status() -> dict:
         "baseline_windows_captured": baseline_windows,
         "windows_open": len(WINDOW_AGGREGATOR),
     }
+
+
+@app.get("/alerts/status")
+def alerts_status() -> dict:
+    """Alert-notifier config + counters (does not expose the webhook URL)."""
+    return NOTIFIER.status()
+
+
+@app.post("/alerts/test")
+def alerts_test() -> dict:
+    """Send a test alert immediately (bypasses throttle) to verify delivery."""
+    if not NOTIFIER.config.enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="alerts not configured — set NIDS_ALERT_WEBHOOK (or email vars)",
+        )
+    sent = NOTIFIER.maybe_flush(time.time(), force=True)
+    return {"sent": sent, "kind": NOTIFIER.config.kind, "failures": NOTIFIER.failures}
