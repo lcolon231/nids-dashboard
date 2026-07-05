@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { fetchHealth, Health } from "@/lib/api";
+import AnomalyPanel from "@/components/AnomalyPanel";
 import DatasetPanel from "@/components/DatasetPanel";
 import LiveFeedPanel from "@/components/LiveFeedPanel";
 import MetricsPanel from "@/components/MetricsPanel";
@@ -53,6 +54,7 @@ export default function Home() {
         <DatasetPanel />
         <RulesPanel />
         <LiveFeedPanel />
+        <AnomalyPanel />
       </div>
     </main>
   );

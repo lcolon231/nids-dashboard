@@ -196,6 +196,16 @@ class SensorEngine:
                 }
             else:
                 record = self.builder.build(conn)
+            # Phase 11: per-source windowing metadata. Ignored by the feature
+            # transformers (they select only their own columns); consumed by
+            # the backend's WindowAggregator for scan/flood detection.
+            record["meta"] = {
+                "src_ip": conn.src_ip,
+                "dst_ip": conn.dst_ip,
+                "dst_port": conn.dst_port,
+                "flag": conn.flag,
+                "bytes": conn.src_bytes + conn.dst_bytes,
+            }
             self._report(self.sender.add(record))
 
     def _report(self, body: dict | None) -> None:

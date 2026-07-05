@@ -86,6 +86,20 @@ def test_completed_connection_is_posted_via_tick():
     assert rec["flag"] == "SF"  # normal establish + terminate
 
 
+def test_posted_record_carries_window_meta():
+    calls = []
+    engine = _mock_engine(calls, batch_size=1)
+    for pkt in _full_connection(src="10.0.0.5", dst="10.0.0.9", dport=80):
+        engine.on_packet(pkt)
+    rec = _records_of(calls[0])[0]
+    meta = rec["meta"]
+    assert meta["src_ip"] == "10.0.0.5"
+    assert meta["dst_ip"] == "10.0.0.9"
+    assert meta["dst_port"] == 80
+    assert meta["flag"] == "SF"
+    assert meta["bytes"] >= 0
+
+
 def test_full_batch_posts_immediately_on_packet():
     calls = []
     engine = _mock_engine(calls, batch_size=1)  # flush after every record
