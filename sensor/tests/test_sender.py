@@ -39,6 +39,22 @@ def test_cic_dataset_param():
     assert calls[0].url.params["dataset"] == "cic"
 
 
+def test_api_key_header_sent_when_configured():
+    calls = []
+    client = httpx.Client(transport=httpx.MockTransport(ok_handler(calls)))
+    s = LiveScoreSender("http://api.test", batch_size=1, client=client, api_key="s3cret")
+    s.add({"a": 1})
+    assert calls[0].headers["X-API-Key"] == "s3cret"
+
+
+def test_no_api_key_header_by_default():
+    calls = []
+    client = httpx.Client(transport=httpx.MockTransport(ok_handler(calls)))
+    s = LiveScoreSender("http://api.test", batch_size=1, client=client)
+    s.add({"a": 1})
+    assert "X-API-Key" not in calls[0].headers
+
+
 def test_manual_flush_sends_partial_batch():
     calls = []
     s = make_sender(ok_handler(calls), batch_size=10)

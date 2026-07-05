@@ -411,3 +411,57 @@ class TestAlertEndpoints:
         client.post("/score/live?dataset=cic", json={"records": recs})
         assert len(sent) == 1
         assert "bad" in sent[0]
+
+
+class TestApiKeyAuth:
+    def test_open_when_unset(self, client):
+        # default API_KEY is None -> no auth required
+        assert client.get("/live/recent").status_code == 200
+
+    def test_401_without_key_when_set(self, client, monkeypatch):
+        monkeypatch.setattr(main, "API_KEY", "s3cret")
+        assert client.get("/live/recent").status_code == 401
+        assert client.post("/predict", json={"records": records(1)}).status_code == 401
+
+    def test_200_with_correct_key(self, client, monkeypatch):
+        monkeypatch.setattr(main, "API_KEY", "s3cret")
+        r = client.post(
+            "/predict", json={"records": records(1)}, headers={"X-API-Key": "s3cret"}
+        )
+        assert r.status_code == 200
+
+    def test_wrong_key_rejected(self, client, monkeypatch):
+        monkeypatch.setattr(main, "API_KEY", "s3cret")
+        r = client.get("/live/recent", headers={"X-API-Key": "nope"})
+        assert r.status_code == 401
+
+    def test_health_exempt_even_when_key_set(self, client, monkeypatch):
+        monkeypatch.setattr(main, "API_KEY", "s3cret")
+        assert client.get("/health").status_code == 200
+
+
+class TestInputLimits:
+    def test_too_many_records_422(self, client):
+        r = client.post("/predict", json={"records": [{}] * (main.MAX_RECORDS + 1)})
+        assert r.status_code == 422
+
+    def test_junk_keys_ignored_not_expanded(self, client):
+        rec = cic_records(1)[0]
+        rec.update({f"junk_{i}": i for i in range(200)})  # attacker-supplied noise
+        r = client.post("/predict?dataset=cic", json={"records": [rec]})
+        assert r.status_code == 200
+        assert r.json()["count"] == 1
+
+
+class TestLogRotation:
+    def test_append_jsonl_rotates_and_keeps_tail(self, tmp_path, monkeypatch):
+        path = tmp_path / "log.jsonl"
+        monkeypatch.setattr(main, "MAX_LOG_BYTES", 200)
+        monkeypatch.setattr(main, "KEEP_LINES", 5)
+        for i in range(100):
+            main._append_jsonl(path, {"i": i})
+        lines = path.read_text().splitlines()
+        # disk stays bounded by the byte cap (didn't grow to all 100 lines)
+        assert path.stat().st_size <= main.MAX_LOG_BYTES + 64
+        assert len(lines) < 100
+        assert json.loads(lines[-1])["i"] == 99  # newest survives the rotation

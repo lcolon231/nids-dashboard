@@ -79,11 +79,14 @@ class SensorEngine:
         schema: str = "nsl",  # "nsl" (41 KDD features) | "cic" (32 flow features)
         verbose: bool = False,
         stats_interval: float = 5.0,
+        api_key: str | None = None,
     ) -> None:
         self.schema = schema
         self.tracker = FlowTracker(tcp_idle=idle_timeout)
         self.builder = FeatureBuilder()
-        self.sender = LiveScoreSender(url, batch_size=batch_size, dataset=schema)
+        self.sender = LiveScoreSender(
+            url, batch_size=batch_size, dataset=schema, api_key=api_key
+        )
         self.flush_interval = flush_interval
         self._lock = threading.Lock()
         self._last_flush = time.time()
@@ -228,6 +231,7 @@ def run(
     idle_timeout: float = 30.0,
     schema: str = "nsl",
     verbose: bool = False,
+    api_key: str | None = None,
 ) -> int:
     # Import from scapy.all (not scapy.sendrecv): scapy.all runs the full
     # layer/conf initialization — protocol dissectors and the L2 capture
@@ -238,7 +242,8 @@ def run(
     from scapy.all import sniff
 
     engine = SensorEngine(
-        url, batch_size, flush_interval, idle_timeout, schema, verbose=verbose
+        url, batch_size, flush_interval, idle_timeout, schema,
+        verbose=verbose, api_key=api_key,
     )
     stop = threading.Event()
 

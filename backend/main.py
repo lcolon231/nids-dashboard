@@ -15,7 +15,9 @@ Run: uvicorn main:app --reload --port 8000
 """
 from __future__ import annotations
 
+import hmac
 import json
+import os
 import time
 from collections import deque
 from contextlib import asynccontextmanager
@@ -24,8 +26,9 @@ from typing import Any, Literal
 
 import joblib
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from nids import data
@@ -87,16 +90,29 @@ WINDOW_BASELINE_PATH = BASELINE_PATH
 NOTIFIER = AlertNotifier(AlertConfig.from_env())
 
 
+# JSONL logs rotate in place: when a file grows past MAX_LOG_BYTES it is
+# trimmed to its last KEEP_LINES entries, bounding disk use (a flood of
+# attacks/windows can't fill the disk) and per-request read cost.
+MAX_LOG_BYTES = 5_000_000
+KEEP_LINES = 10_000
+
+
+def _append_jsonl(path, obj: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.stat().st_size > MAX_LOG_BYTES:
+        with path.open(encoding="utf-8") as f:
+            tail = deque(f, maxlen=KEEP_LINES)
+        path.write_text("".join(tail), encoding="utf-8")
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(obj) + "\n")
+
+
 def _append_attack_log(event: dict) -> None:
-    ATTACK_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with ATTACK_LOG_PATH.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(event) + "\n")
+    _append_jsonl(ATTACK_LOG_PATH, event)
 
 
 def _append_baseline(window: dict) -> None:
-    WINDOW_BASELINE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with WINDOW_BASELINE_PATH.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(window) + "\n")
+    _append_jsonl(WINDOW_BASELINE_PATH, window)
 
 
 def _process_finalized_windows(now: float) -> None:
@@ -149,15 +165,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Optional API-key auth. When NIDS_API_KEY is set, every request except the
+# exempt paths (and CORS preflight) must carry a matching X-API-Key header.
+# Unset -> open (backwards compatible; the sensor keeps working until you opt
+# in on both sides). Module-level so tests can monkeypatch it.
+API_KEY = os.environ.get("NIDS_API_KEY") or None
+AUTH_EXEMPT = {"/health", "/docs", "/redoc", "/openapi.json"}
+
+
+@app.middleware("http")
+async def api_key_auth(request: Request, call_next):
+    if API_KEY and request.method != "OPTIONS" and request.url.path not in AUTH_EXEMPT:
+        provided = request.headers.get("x-api-key", "")
+        if not hmac.compare_digest(provided, API_KEY):
+            return JSONResponse(
+                {"detail": "invalid or missing X-API-Key"}, status_code=401
+            )
+    return await call_next(request)
+
 ModelName = Literal["nb", "dt", "rf", "xgb"]
 PhaseName = Literal["binary", "multiclass"]
 DatasetName = Literal["nsl", "cic"]
 
 
+# Cap batch size so one unauthenticated POST can't exhaust memory (the sensor
+# posts tiny batches; this is generous headroom).
+MAX_RECORDS = 5000
+
+
 class PredictRequest(BaseModel):
     """A batch of raw records (41 NSL-KDD or 32 CIC flow features, no label)."""
 
-    records: list[dict[str, Any]] = Field(min_length=1)
+    records: list[dict[str, Any]] = Field(min_length=1, max_length=MAX_RECORDS)
 
 
 def _get_model(model: str, phase: str, dataset: str = "nsl"):
@@ -175,13 +214,16 @@ def _get_model(model: str, phase: str, dataset: str = "nsl"):
 
 
 def _records_to_frame(records: list[dict[str, Any]], dataset: str = "nsl") -> pd.DataFrame:
-    df = pd.DataFrame(records)
-    missing = set(REQUIRED_FEATURES[dataset]) - set(df.columns)
+    required = list(REQUIRED_FEATURES[dataset])
+    present = set().union(*(r.keys() for r in records)) if records else set()
+    missing = set(required) - present
     if missing:
         raise HTTPException(
             status_code=422, detail=f"records missing features: {sorted(missing)}"
         )
-    return df
+    # Restrict to the known feature columns so junk/extra keys (e.g. thousands
+    # of attacker-supplied keys) can't blow up the frame with columns.
+    return pd.DataFrame(records, columns=required)
 
 
 def _predict(
@@ -355,8 +397,11 @@ def attacks_log(
     """Persisted attack log, newest-first. files_only keeps host-impact hits."""
     attacks: list[dict] = []
     if ATTACK_LOG_PATH.exists():
+        # Read only the tail into memory (bounded regardless of file size).
+        read_lines = limit * 5 if files_only else limit
         with ATTACK_LOG_PATH.open(encoding="utf-8") as f:
-            attacks = [json.loads(line) for line in f if line.strip()]
+            tail = deque(f, maxlen=read_lines)
+        attacks = [json.loads(line) for line in tail if line.strip()]
     if files_only:
         attacks = [a for a in attacks if a.get("has_file_activity")]
     attacks = attacks[-limit:][::-1]  # file is append-order; newest first

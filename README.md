@@ -185,6 +185,24 @@ sensor/
 **Sensor:** scapy · httpx (pure-Python core, testable without capture or root)
 **Frontend:** Next.js 15 · React 19 · TypeScript · Tailwind CSS 4
 
+## Security
+
+The API is unauthenticated by default (fine on an isolated home lab). For anything beyond that, set an API key — the backend then requires an `X-API-Key` header on every request except `/health`:
+
+```powershell
+$env:NIDS_API_KEY = "a-long-random-string"
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+Point the sensor at the same key (or set `NIDS_API_KEY` in its environment):
+
+```bash
+sudo sensor/.venv/bin/python -m nids_sensor --iface wlan0 --url http://<host>:8000 \
+     --schema cic --api-key "a-long-random-string"
+```
+
+Authenticating the sensor feed also closes the **anomaly-baseline poisoning** vector — without it, anyone on the network can inject windows into your training baseline via `/score/live`. Other hardening baked in: request batches are capped (`MAX_RECORDS`) and restricted to known feature columns (memory-exhaustion DoS), the attack/baseline JSONL logs rotate in place at a byte cap (disk DoS) and are tail-read (`/attacks/log` stays bounded regardless of log size), and CIC archive extraction rejects zip-slip paths.
+
 ## Datasets
 
 - [NSL-KDD](https://github.com/defcom17/NSL_KDD) — a curated revision of the KDD Cup '99 benchmark. 41 features per connection; labels cover normal traffic plus 4 attack families (DoS, Probe, R2L, U2R). Test set includes attack types unseen in training.

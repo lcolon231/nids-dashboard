@@ -6,6 +6,7 @@ Usage (needs root or CAP_NET_RAW for packet capture):
 from __future__ import annotations
 
 import argparse
+import os
 
 from nids_sensor.capture import run
 
@@ -32,6 +33,9 @@ def main() -> int:
                          "counters (packets seen, dropped non-IP/own, flows "
                          "open/finalized, records buffered/sent) — use this to "
                          "diagnose why no [sent] lines appear")
+    ap.add_argument("--api-key", default=os.environ.get("NIDS_API_KEY"),
+                    help="X-API-Key sent to the backend if it requires auth "
+                         "(defaults to the NIDS_API_KEY env var)")
     args = ap.parse_args()
     return run(
         url=args.url,
@@ -42,6 +46,7 @@ def main() -> int:
         idle_timeout=args.idle_timeout,
         schema=args.schema,
         verbose=args.verbose,
+        api_key=args.api_key,
     )
 
 
