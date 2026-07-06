@@ -3,6 +3,10 @@
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
+// Sent as X-API-Key when the backend has NIDS_API_KEY set. Leave unset for
+// an open (LAN-only) backend.
+const API_KEY = process.env.NEXT_PUBLIC_NIDS_API_KEY;
+
 export type Phase = "binary" | "multiclass";
 export type Split = "train" | "test";
 export type Dataset = "nsl" | "cic";
@@ -97,7 +101,8 @@ export interface AnomalyStatus {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const r = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
+  const headers: Record<string, string> = API_KEY ? { "X-API-Key": API_KEY } : {};
+  const r = await fetch(`${API_BASE}${path}`, { cache: "no-store", headers });
   if (!r.ok) throw new Error(`${path} -> ${r.status}`);
   return r.json();
 }
