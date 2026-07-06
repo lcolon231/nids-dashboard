@@ -1,0 +1,19 @@
+[Unit]
+Description=NIDS Pi sensor — packet capture -> backend /score/live
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Packet capture needs root (or grant CAP_NET_RAW to the venv python instead).
+User=root
+WorkingDirectory=/home/luisa/nids-dashboard/sensor
+# Holds NIDS_API_KEY (and anything else). Sensor reads NIDS_API_KEY itself.
+EnvironmentFile=/etc/nids-sensor.env
+ExecStart=/home/luisa/nids-dashboard/sensor/.venv/bin/python -m nids_sensor \
+    --iface wlan0 --url http://10.20.20.194:8000 --schema cic
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
