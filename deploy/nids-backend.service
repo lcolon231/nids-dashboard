@@ -1,0 +1,18 @@
+[Unit]
+Description=NIDS backend API (FastAPI) — scoring, anomaly, alerts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# No packet capture here, so no root needed — run as the normal user.
+User=luisa
+WorkingDirectory=/home/luisa/nids-dashboard/backend
+# Holds NIDS_API_KEY and any NIDS_ALERT_* vars.
+EnvironmentFile=/etc/nids-backend.env
+ExecStart=/home/luisa/nids-dashboard/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
