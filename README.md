@@ -1,8 +1,10 @@
 # NIDS Dashboard
 
+[![CI](https://github.com/lcolon231/nids-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/lcolon231/nids-dashboard/actions/workflows/ci.yml)
+
 A two-tier **Network Intrusion Detection System** dashboard: a Python/FastAPI machine-learning backend and a Next.js 15 frontend. It trains supervised classifiers on two datasets (NSL-KDD and CIC-IDS2017), mines attack signatures, scores live traffic from a real Raspberry Pi packet-capture sensor, flags scans/floods with an unsupervised anomaly layer trained on your own network, and pushes alerts to your phone when you're attacked.
 
-![NIDS Dashboard — model performance, dataset summary, association rules, and live feed panels](docs/screenshot.png)
+![NIDS Dashboard — model performance, dataset summary, association rules, live feed, and anomaly panels](docs/screenshot.png)
 
 ```
 ┌──────────────┐  POST /score/live   ┌──────────────────────────────┐   GET /metrics /anomalies …  ┌──────────────┐
@@ -58,7 +60,7 @@ python -m nids.association build  # Apriori rules -> data/processed/rules.csv
 python -m nids.cic download
 python -m nids.models train --dataset cic
 
-pytest                            # 41 tests, synthetic fixtures only
+pytest                            # ~120 tests, synthetic fixtures only
 uvicorn main:app --reload --port 8000
 ```
 
@@ -91,7 +93,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 sudo .venv/bin/python -m nids_sensor --iface eth0 --url http://<backend-host>:8000
 ```
 
-See [sensor/README.md](sensor/README.md) for capture permissions, feature-derivation notes, and limitations.
+See [sensor/README.md](sensor/README.md) for capture permissions, feature-derivation notes, and limitations, and [docs/DEPLOY.md](docs/DEPLOY.md) to run the backend, frontend, and sensor as services.
 
 ## API
 
@@ -174,6 +176,8 @@ frontend/
   app/                 Next.js 15 (App Router)
   components/          Metrics · Dataset · Rules · LiveFeed · Anomaly panels
   lib/api.ts           typed API client
+deploy/                Pi sensor systemd unit + env template (see docs/DEPLOY.md)
+.github/workflows/     CI — backend + sensor pytest, frontend lint/typecheck/build
 sensor/
   nids_sensor/         Raspberry Pi capture client (scapy -> flows -> features)
   tests/               pytest suite — pure-Python, no capture required
@@ -200,6 +204,15 @@ Point the sensor at the same key (or set `NIDS_API_KEY` in its environment):
 sudo sensor/.venv/bin/python -m nids_sensor --iface wlan0 --url http://<host>:8000 \
      --schema cic --api-key "a-long-random-string"
 ```
+
+The dashboard needs the key too — set it before building the frontend:
+
+```powershell
+$env:NEXT_PUBLIC_NIDS_API_KEY = "a-long-random-string"
+npm run build
+```
+
+`NEXT_PUBLIC_*` values are compiled into the browser bundle, so anyone who can load the dashboard can read the key. Fine on a trusted LAN; don't expose the dashboard publicly with this setup.
 
 Authenticating the sensor feed also closes the **anomaly-baseline poisoning** vector — without it, anyone on the network can inject windows into your training baseline via `/score/live`. Other hardening baked in: request batches are capped (`MAX_RECORDS`) and restricted to known feature columns (memory-exhaustion DoS), the attack/baseline JSONL logs rotate in place at a byte cap (disk DoS) and are tail-read (`/attacks/log` stays bounded regardless of log size), and CIC archive extraction rejects zip-slip paths.
 

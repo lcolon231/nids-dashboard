@@ -24,7 +24,7 @@ export default function Home() {
             NIDS Dashboard
           </h1>
           <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
-            Network intrusion detection on NSL-KDD — GaussianNB · DecisionTree · Apriori
+            Network intrusion detection on NSL-KDD + CIC-IDS2017 — NB · DT · RF · XGBoost · Apriori · IsolationForest
           </p>
         </div>
         <span
