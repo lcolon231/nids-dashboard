@@ -1,6 +1,7 @@
 # NIDS Dashboard
 
 [![CI](https://github.com/lcolon231/nids-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/lcolon231/nids-dashboard/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A two-tier **Network Intrusion Detection System** dashboard: a Python/FastAPI machine-learning backend and a Next.js 15 frontend. It trains supervised classifiers on two datasets (NSL-KDD and CIC-IDS2017), mines attack signatures, scores live traffic from a real Raspberry Pi packet-capture sensor, flags scans/floods with an unsupervised anomaly layer trained on your own network, and pushes alerts to your phone when you're attacked.
 
@@ -17,19 +18,24 @@ A two-tier **Network Intrusion Detection System** dashboard: a Python/FastAPI ma
                                       └──────────────────────────────┘
 ```
 
+**Contents:** [Features](#features) · [Results](#results) · [Quickstart](#quickstart) · [API](#api) · [Anomaly layer](#anomaly-layer-train-on-your-own-traffic) · [Alerts](#attack-alerts-get-notified-when-attacked) · [Security](#security) · [Testing & CI](#testing--ci) · [Project structure](#project-structure) · [Limitations](#limitations)
+
 ## Features
 
 - **Binary + multiclass classification** — Gaussian Naive Bayes, Decision Tree, Random Forest, and XGBoost, trained on `KDDTrain+` (125,973 connections), evaluated on `KDDTest+` (22,544 connections, including attack types unseen in training)
+- **Modern traffic models (CIC-IDS2017)** — a second model family trained on 32 flow-metadata features (sizes, timings, TCP flags) that work on today's encrypted traffic; toggle `nsl`/`cic` in the dashboard, select with `dataset=cic` on the API, or run the Pi sensor with `--schema cic`
 - **Unsupervised clustering** — KMeans sweep k=2..10 with inertia + silhouette scoring
 - **Association rule mining** — Apriori (mlxtend) surfaces human-readable attack signatures, e.g. `{flag=RSTR, service=private} → probe` (confidence 1.0, lift 10.8)
-- **Live scoring** — a sensor client streams connection records to `/score/live`; the dashboard's Live Feed panel shows attacks flagged in near-real time
-- **Modern traffic models (CIC-IDS2017)** — a second model family trained on 32 flow-metadata features (sizes, timings, TCP flags) that work on today's encrypted traffic; toggle `nsl`/`cic` in the dashboard, select with `dataset=cic` on the API, or run the Pi sensor with `--schema cic`
-- **Unsupervised anomaly layer** — per-source-IP time-window aggregation (port/host fan-out, failed-connection ratio, byte volume) fed to an IsolationForest trained on *your own* network's normal traffic. Catches scans and floods the per-flow models miss (a single probe is featureless; one source hitting 999 ports in 5s is not). No labels needed — `python -m nids.anomaly train` after a baseline capture
-- **Attack alerts** — get a phone push (ntfy.sh), Discord/Slack message, or email when you're attacked. Aggregated + throttled so a scan sends one summary alert, not thousands. Configured entirely by environment variables; a no-op until set
-- **Attack logging with host-impact visibility** — every flagged attack is appended to a persistent JSONL log (`backend/data/processed/attack_log.jsonl`) enriched with NSL-KDD's file-activity features (`num_file_creations`, `num_access_files`, `root_shell`, ...); the Live Feed shows a 📁 host-impact badge on attacks that touched files. **Limitation:** NSL-KDD provides file-activity *counts*, not filenames — actual affected-file paths would require a host-based log source (auditd/Wazuh) or Zeek `files.log`, which is out of scope here.
-- **Fully reproducible** — data and model artifacts are gitignored and regenerate from two CLI commands
+- **Live scoring from a real sensor** — a Raspberry Pi sniffs traffic, assembles flows, derives features on the fly, and streams them to `/score/live`; the Live Feed panel shows attacks flagged in near-real time
+- **Unsupervised anomaly layer** — per-source-IP time-window aggregation (port/host fan-out, failed-connection ratio, byte volume) fed to an IsolationForest trained on *your own* network's normal traffic. Catches scans and floods the per-flow models miss (a single probe is featureless; one source hitting 999 ports in 5s is not). No labels needed
+- **Attack alerts** — phone push (ntfy.sh), Discord/Slack message, or email when you're attacked. Aggregated + throttled so a scan sends one summary alert, not thousands. Configured entirely by environment variables; a no-op until set
+- **Persistent attack log** — every flagged attack is appended to a JSONL log enriched with NSL-KDD's file-activity features (`num_file_creations`, `num_access_files`, `root_shell`, …); the Live Feed shows a 📁 host-impact badge on attacks that touched files
+- **Hardened API** — optional API-key auth, request-size caps, rotating logs, zip-slip-safe dataset extraction
+- **Reproducible** — data and model artifacts are gitignored and regenerate from a handful of CLI commands; tests use synthetic fixtures only and run in CI
 
-## Results (KDDTest+)
+## Results
+
+### NSL-KDD (`KDDTest+`)
 
 | Model | Binary acc / F1 | Multiclass acc / F1 (macro) |
 |-------|-----------------|------------------------------|
@@ -40,9 +46,20 @@ A two-tier **Network Intrusion Detection System** dashboard: a Python/FastAPI ma
 
 KDDTest+ deliberately contains novel attack types, so ~78–81% is in line with published single-model baselines. Notably the single Decision Tree edges out the ensembles on binary detection here — a known NSL-KDD quirk (ensembles fit the training attack distribution more tightly and generalize slightly worse to unseen attack types).
 
+### CIC-IDS2017 (stratified 30% hold-out)
+
+| Model | Binary acc / F1 | Multiclass acc / F1 (macro) |
+|-------|-----------------|------------------------------|
+| XGBoost | **0.999** / **0.998** | **0.999** / 0.940 |
+| Random Forest | **0.999** / 0.997 | **0.999** / **0.949** |
+| Decision Tree | **0.999** / 0.996 | 0.998 / 0.928 |
+| Gaussian NB | 0.555 / 0.463 | 0.370 / 0.343 |
+
+CIC-IDS2017 has no canonical test split, so these come from a random stratified 70/30 split of the same capture — train and test share attack tools and network, which is why scores are near-perfect. Treat them as an upper bound, not a prediction of performance on your network; that's what the anomaly layer is for.
+
 ## Quickstart
 
-**Prereqs:** Python 3.11, Node 18+
+**Prereqs:** Python 3.11, Node 18.18+
 
 ### 1. Backend (API on :8000)
 
@@ -53,16 +70,17 @@ python -m venv .venv
 pip install -r requirements.txt
 
 python -m nids.data download      # fetch + verify NSL-KDD -> data/raw/
-python -m nids.models train       # transformer + NB/DT/KMeans -> data/processed/
+python -m nids.models train       # transformer + NB/DT/RF/XGB + KMeans -> data/processed/
 python -m nids.association build  # Apriori rules -> data/processed/rules.csv
 
 # optional: modern-traffic models (CIC-IDS2017, ~230 MB download)
 python -m nids.cic download
 python -m nids.models train --dataset cic
 
-pytest                            # ~120 tests, synthetic fixtures only
 uvicorn main:app --reload --port 8000
 ```
+
+Interactive API docs: **http://localhost:8000/docs**
 
 ### 2. Frontend (dashboard on :3000)
 
@@ -72,25 +90,23 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:3000**.
+Open **http://localhost:3000**. Set `NEXT_PUBLIC_API_URL` if the backend isn't on `127.0.0.1:8000` (see [frontend/README.md](frontend/README.md)).
 
-### 3. Live feed (optional)
+### 3. Live feed — simulator (optional)
 
 ```powershell
 cd backend
-.venv\Scripts\python sensor_sim.py    # streams 5 records every 2s to /score/live
+.venv\Scripts\python sensor_sim.py    # streams 5 real KDDTest+ records every 2s to /score/live
 ```
 
-The simulator samples real `KDDTest+` records.
+### 4. Live feed — real Pi sensor (optional)
 
-### 4. Real Pi sensor (optional)
-
-A real packet-capture sensor lives in [`sensor/`](sensor/README.md). It sniffs live traffic (scapy), assembles flows, derives the NSL-KDD features on the fly, and POSTs to the same `/score/live` endpoint:
+A real packet-capture sensor lives in [`sensor/`](sensor/README.md). It sniffs live traffic (scapy), assembles flows, derives NSL-KDD (41) or CIC (32) features on the fly, and POSTs to the same `/score/live` endpoint:
 
 ```bash
 cd sensor
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-sudo .venv/bin/python -m nids_sensor --iface eth0 --url http://<backend-host>:8000
+sudo .venv/bin/python -m nids_sensor --iface eth0 --url http://<backend-host>:8000 --schema cic
 ```
 
 See [sensor/README.md](sensor/README.md) for capture permissions, feature-derivation notes, and limitations, and [docs/DEPLOY.md](docs/DEPLOY.md) to run the backend, frontend, and sensor as services.
@@ -99,7 +115,7 @@ See [sensor/README.md](sensor/README.md) for capture permissions, feature-deriva
 
 | Method | Path | Params | Description |
 |--------|------|--------|-------------|
-| GET | `/health` | — | status + loaded models |
+| GET | `/health` | — | status + loaded models (never requires auth) |
 | POST | `/predict` | `model=nb\|dt\|rf\|xgb`, `phase=binary\|multiclass`, `dataset=nsl\|cic` | classify a batch of records |
 | GET | `/metrics` | `phase=binary\|multiclass`, `dataset=nsl\|cic` | all-model held-out metrics |
 | GET | `/dataset/summary` | `split=train\|test` | rows, cols, class distribution |
@@ -112,9 +128,9 @@ See [sensor/README.md](sensor/README.md) for capture permissions, feature-deriva
 | GET | `/alerts/status` | — | alert channel + throttle config (no secrets) |
 | POST | `/alerts/test` | — | send a test alert now (bypasses throttle) |
 
-`dataset=nsl` (default) uses the NSL-KDD 41-feature models; `dataset=cic` uses models trained on CIC-IDS2017's modern flow-metadata features (32 numeric features derived from packet sizes, timings, and TCP flags — computable on encrypted traffic).
+`dataset=nsl` (default) uses the NSL-KDD 41-feature models; `dataset=cic` uses the CIC-IDS2017 32-feature flow-metadata models.
 
-### Anomaly layer (train on your own traffic)
+## Anomaly layer (train on your own traffic)
 
 The supervised models score each flow in isolation, so they miss scans and floods — a lone probe is nearly featureless. The anomaly layer groups flows by source IP over 60-second windows and learns your network's normal fan-out/failure profile:
 
@@ -128,7 +144,9 @@ python -m nids.anomaly train
 #    (nmap against the sensor host) and watch it flag.
 ```
 
-### Attack alerts (get notified when attacked)
+Windows need source IPs, so this layer is fed by the real sensor, not the simulator.
+
+## Attack alerts (get notified when attacked)
 
 Set environment variables on the backend host before starting uvicorn. Alerts are a no-op until configured, aggregated + throttled so a scan sends one summary (not thousands), and per-flow attacks must cross `MIN_ATTACKS` to fire (anomalous windows always fire).
 
@@ -150,44 +168,6 @@ curl -X POST http://127.0.0.1:8000/alerts/test
 | `NIDS_ALERT_EMAIL_TO` / `_SMTP_HOST` / `_SMTP_PORT` / `_SMTP_USER` / `_SMTP_PASSWORD` | — | email channel (use a Gmail App Password) |
 
 Discord/Slack use that channel's incoming-webhook URL; `generic` POSTs `{"title","message"}` JSON to any endpoint.
-
-Interactive docs: **http://localhost:8000/docs**
-
-## Project structure
-
-```
-backend/
-  nids/
-    data.py            NSL-KDD download + verification + loading
-    preprocessing.py   FeatureTransformer (one-hot + scaling) + label maps
-    flowschema.py      modern 32-feature flow schema + CIC label maps
-    cic.py             CIC-IDS2017 download + cleaning + split + scaler
-    windows.py         per-source-IP time-window aggregation
-    anomaly.py         IsolationForest window-anomaly model + baseline/train
-    alerts.py          throttled attack alerts (ntfy/Discord/Slack/email)
-    models.py          model training (NSL-KDD + CIC), KMeans sweep, persistence
-    association.py     Apriori rule mining -> rules.csv
-    evaluation.py      accuracy / precision / recall / F1
-  tests/               pytest suite — synthetic fixtures, never the real dataset
-  main.py              FastAPI app
-  sensor_sim.py        simulated Pi sensor
-  SPEC.md              full build spec
-frontend/
-  app/                 Next.js 15 (App Router)
-  components/          Metrics · Dataset · Rules · LiveFeed · Anomaly panels
-  lib/api.ts           typed API client
-deploy/                Pi sensor systemd unit + env template (see docs/DEPLOY.md)
-.github/workflows/     CI — backend + sensor pytest, frontend lint/typecheck/build
-sensor/
-  nids_sensor/         Raspberry Pi capture client (scapy -> flows -> features)
-  tests/               pytest suite — pure-Python, no capture required
-```
-
-## Stack
-
-**Backend:** FastAPI · scikit-learn (incl. IsolationForest) · XGBoost · mlxtend · pandas · joblib · pytest
-**Sensor:** scapy · httpx (pure-Python core, testable without capture or root)
-**Frontend:** Next.js 15 · React 19 · TypeScript · Tailwind CSS 4
 
 ## Security
 
@@ -216,10 +196,66 @@ npm run build
 
 Authenticating the sensor feed also closes the **anomaly-baseline poisoning** vector — without it, anyone on the network can inject windows into your training baseline via `/score/live`. Other hardening baked in: request batches are capped (`MAX_RECORDS`) and restricted to known feature columns (memory-exhaustion DoS), the attack/baseline JSONL logs rotate in place at a byte cap (disk DoS) and are tail-read (`/attacks/log` stays bounded regardless of log size), and CIC archive extraction rejects zip-slip paths.
 
+## Testing & CI
+
+```powershell
+cd backend && pytest        # 123 tests — synthetic fixtures, never the real dataset
+cd sensor  && pytest        # 48 tests — pure-Python, no capture or root needed
+cd frontend && npm run lint && npx tsc --noEmit && npm run build
+```
+
+GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs all three on every pull request and push to `master`.
+
+## Project structure
+
+```
+backend/
+  nids/
+    data.py            NSL-KDD download + verification + loading
+    preprocessing.py   FeatureTransformer (one-hot + scaling) + label maps
+    flowschema.py      modern 32-feature flow schema + CIC label maps
+    cic.py             CIC-IDS2017 download + cleaning + split + scaler
+    windows.py         per-source-IP time-window aggregation
+    anomaly.py         IsolationForest window-anomaly model + baseline/train
+    alerts.py          throttled attack alerts (ntfy/Discord/Slack/email)
+    models.py          model training (NSL-KDD + CIC), KMeans sweep, persistence
+    association.py     Apriori rule mining -> rules.csv
+    evaluation.py      accuracy / precision / recall / F1
+  tests/               pytest suite — synthetic fixtures only
+  main.py              FastAPI app
+  sensor_sim.py        simulated Pi sensor
+  SPEC.md              full build spec
+frontend/
+  app/                 Next.js 15 (App Router)
+  components/          Metrics · Dataset · Rules · LiveFeed · Anomaly panels
+  lib/api.ts           typed API client
+sensor/
+  nids_sensor/         Raspberry Pi capture client (scapy -> flows -> features)
+  tests/               pytest suite — pure-Python, no capture required
+deploy/                Pi sensor systemd unit + env template
+docs/                  DEPLOY.md (run everything as services) + screenshot
+.github/workflows/     CI
+```
+
+## Stack
+
+**Backend:** FastAPI · scikit-learn (incl. IsolationForest) · XGBoost · mlxtend · pandas · joblib · pytest
+**Sensor:** scapy · httpx (pure-Python core, testable without capture or root)
+**Frontend:** Next.js 15 · React 19 · TypeScript · Tailwind CSS 4
+**CI:** GitHub Actions
+
 ## Datasets
 
 - [NSL-KDD](https://github.com/defcom17/NSL_KDD) — a curated revision of the KDD Cup '99 benchmark. 41 features per connection; labels cover normal traffic plus 4 attack families (DoS, Probe, R2L, U2R). Test set includes attack types unseen in training.
 - [CIC-IDS2017](https://www.unb.ca/cic/datasets/ids-2017.html) — modern (2017) labeled traffic. This project uses 32 flow-metadata features (packet sizes, inter-arrival times, TCP flag counts) that are computable live from packet headers, so the same models work on encrypted traffic.
+
+## Limitations
+
+- **NSL-KDD is dated.** Its traffic is from 1998; the NSL models are best read as a benchmark. Use `--schema cic` for live traffic.
+- **CIC scores are optimistic.** See [Results](#cic-ids2017-stratified-30-hold-out) — a random split of one capture doesn't measure generalization to other networks.
+- **File activity is counts only.** NSL-KDD provides file-activity *counts*, not filenames; affected-file paths would need a host-based source (auditd/Wazuh) or Zeek `files.log`.
+- **Single-sensor, single-host.** The backend keeps live state in memory and JSONL files — designed for a home lab, not a fleet.
+- **The API key reaches the browser.** See [Security](#security).
 
 ## License
 
